@@ -1,13 +1,12 @@
 
 import io
 from pathlib import Path
-from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
 import streamlit as st
 
-# Optional mapping feature (uses internet tiles), guarded import
+# Optional map deps
 try:
     import folium
     from streamlit_folium import st_folium
@@ -15,20 +14,15 @@ try:
 except Exception:
     HAVE_MAP = False
 
-st.set_page_config(page_title="Geoportal de Metano (Streamlit)", layout="wide")
-st.markdown(
-    "<div style='background:#3b82f6;color:white;padding:10px 16px;border-radius:8px;margin-bottom:10px;display:flex;align-items:center;gap:12px'>"
-    "<span style='font-size:18px;font-weight:600'>Sistema de Monitoramento de Metano por Satélite</span>"
-    "</div>",
-    unsafe_allow_html=True,
-)
+st.set_page_config(page_title="Geoportal — Imagem em destaque", layout="wide")
+st.title("📷 Geoportal de Metano — Imagem em destaque")
 
 with st.sidebar:
     st.header("📁 Fonte dos Dados")
     excel_url = st.text_input("RAW URL do Excel (.xlsx) no GitHub (opcional):",
                               placeholder="https://raw.githubusercontent.com/<user>/<repo>/<branch>/bancodados.xlsx")
     uploaded = st.file_uploader("Ou faça upload do Excel (.xlsx)", type=["xlsx"])
-    base_url = st.text_input("Base URL para imagens (obrigatório se ImagePath for relativo):",
+    base_url = st.text_input("Base URL p/ imagens (obrigatório se ImagePath for relativo):",
                              placeholder="https://raw.githubusercontent.com/<user>/<repo>/<branch>")
 
 @st.cache_data
@@ -69,10 +63,7 @@ def extract_dates_from_first_row(df: pd.DataFrame) -> Tuple[List[str], Dict[str,
     date_cols = cols[data_idx:]
     pretty: Dict[str, str] = {}
     for c in date_cols:
-        try:
-            v = df.loc[0, c]
-        except Exception:
-            v = None
+        v = df.loc[0, c] if 0 in df.index else None
         label = None
         if pd.notna(v):
             try:
@@ -100,9 +91,7 @@ def build_record_for_month(df: pd.DataFrame, date_col: str) -> Dict[str, Optiona
         dfi.columns = ["Parametro"] + list(dfi.columns[1:])
     dfi["Parametro"] = dfi["Parametro"].astype(str).str.strip()
     dfi = dfi.set_index("Parametro", drop=True)
-    rec = {}
-    for param in dfi.index:
-        rec[param] = dfi.loc[param, date_col]
+    rec = {param: dfi.loc[param, date_col] for param in dfi.index}
     lat_val = df["Lat"].dropna().iloc[0] if "Lat" in df.columns and df["Lat"].notna().any() else None
     lon_val = df["Long"].dropna().iloc[0] if "Long" in df.columns and df["Long"].notna().any() else None
     rec["_lat"] = lat_val
@@ -121,81 +110,49 @@ def resolve_image_target(path_str: str, base_url: str) -> Optional[str]:
         return f"{base_url.rstrip('/')}/{s.lstrip('/')}"
     return None
 
-# Load workbook
-book: Dict[str, pd.DataFrame] = {}
+# Carrega workbook
+book = {}
 if excel_url.strip():
-    try:
-        # Ensure the URL is a RAW .xlsx (not the HTML page)
-        if "raw.githubusercontent.com" not in excel_url:
-            st.warning("Parece que a URL não é RAW. Clique em 'Raw' no GitHub e copie a URL que começa com raw.githubusercontent.com.")
-        book = read_excel_from_url(excel_url.strip())
-        st.success("Excel carregado via URL.")
-    except Exception as e:
-        st.error(f"Falha ao baixar/ler o Excel da URL. Detalhe: {e}")
-        st.stop()
+    book = read_excel_from_url(excel_url.strip())
 elif uploaded is not None:
-    try:
-        book = read_excel_from_bytes(uploaded)
-        st.success("Excel carregado via upload.")
-    except Exception as e:
-        st.error(f"Falha ao ler o Excel enviado. Detalhe: {e}")
-        st.stop()
+    book = read_excel_from_bytes(uploaded)
 else:
     st.info("Forneça o RAW URL do Excel ou faça upload do arquivo.")
     st.stop()
 
-# Normalize columns
 book = {name: normalize_cols(df.copy()) for name, df in book.items()}
 
-# Site selector
+# Select site
 site = st.selectbox("Selecione o Site", sorted(book.keys()))
 df_site = book[site]
 
 # Dates
 date_cols, pretty = extract_dates_from_first_row(df_site)
+ordered = sorted(date_cols, key=lambda c: pretty.get(c, str(c)))
+labels = [pretty[c] for c in ordered]
+selected_label = st.selectbox("Selecione a data", labels)
+selected_col = ordered[labels.index(selected_label)]
 
-# Sidebar thumbnails
-with st.sidebar:
-    st.header("🗓️ Filtro de Datas")
-    ordered = sorted(date_cols, key=lambda c: pretty.get(c, str(c)))
-    labels = [pretty[c] for c in ordered]
-    selected_label = st.selectbox("Escolha a data", labels)
-    selected_col = ordered[labels.index(selected_label)]
-
-    st.markdown("---")
-    st.caption("Pré-visualizações")
-    for c in ordered:
-        rec = build_record_for_month(df_site, c)
-        img = resolve_image_target(rec.get("Imagem"), base_url)
-        sat = rec.get("Satelite") or rec.get("Satélite")
-        dt_label = pretty[c]
-        if img:
-            st.image(img, use_column_width=True)
-        st.write(f"**{dt_label}**")
-        if sat and pd.notna(sat):
-            st.caption(f"Satélite: {sat}")
-        st.checkbox("Selecionar", key=f"sel_{c}", value=(c==selected_col))
-
+# Two columns: left = IMAGE (hero), right = KPIs/table, with optional MAP in expander
 left, right = st.columns([2,1])
 
 with left:
-    st.subheader(f"Mapa — {site}")
-    rec_sel = build_record_for_month(df_site, selected_col)
-    lat = rec_sel.get("_lat")
-    lon = rec_sel.get("_long")
-    if HAVE_MAP and (lat is not None and lon is not None):
-        m = folium.Map(location=[float(lat), float(lon)], zoom_start=13, tiles="OpenStreetMap")
-        folium.Marker([float(lat), float(lon)], tooltip=site).add_to(m)
-        st_folium(m, height=520, use_container_width=True)
+    rec = build_record_for_month(df_site, selected_col)
+    img = resolve_image_target(rec.get("Imagem"), base_url)
+    st.subheader(f"Imagem — {site} — {selected_label}")
+    if img:
+        st.image(img, use_column_width=True)
     else:
-        st.info("Mapa indisponível (faltando Lat/Long ou dependências).")
-    st.subheader("Figura (pluma)")
-    img = resolve_image_target(rec_sel.get("Imagem"), base_url)
-    show_plume = st.toggle("PLUME", value=True)
-    if show_plume and img:
-        st.image(img, use_column_width=True, caption=f"{pretty[selected_col]} — {site}")
-    elif show_plume:
-        st.info("Sem imagem para esta data.")
+        st.warning("Imagem não encontrada para essa data (verifique a linha 'Imagem' e a Base URL).")
+
+    # Optional map under an expander
+    if HAVE_MAP and (rec.get("_lat") is not None and rec.get("_long") is not None):
+        with st.expander("🗺️ Mostrar mapa (opcional)", expanded=False):
+            import folium
+            from streamlit_folium import st_folium
+            m = folium.Map(location=[float(rec["_lat"]), float(rec["_long"])], zoom_start=13, tiles="OpenStreetMap")
+            folium.Marker([float(rec["_lat"]), float(rec["_long"])], tooltip=site).add_to(m)
+            st_folium(m, height=400, use_container_width=True)
 
 with right:
     st.subheader("Detalhes do Registro")
@@ -204,11 +161,12 @@ with right:
         dfi.columns = ["Parametro"] + list(dfi.columns[1:])
     dfi["Parametro"] = dfi["Parametro"].astype(str).str.strip()
     dfi = dfi.set_index("Parametro", drop=True)
-    col = selected_col
+
+    # KPIs
     def getv(name):
         for cand in (name, name.capitalize(), name.title(), name.replace("ç","c").replace("á","a")):
             if cand in dfi.index:
-                return dfi.loc[cand, col]
+                return dfi.loc[cand, selected_col]
         return None
     taxa = getv("Taxa Metano")
     inc = getv("Incerteza")
@@ -228,6 +186,23 @@ with right:
 
     st.markdown("---")
     st.caption("Tabela completa (parâmetro → valor):")
-    show_df = dfi[[col]].copy()
+    show_df = dfi[[selected_col]].copy()
     show_df.columns = ["Valor"]
+    # Oculta a linha 'Imagem' na tabela para não poluir
+    if "Imagem" in show_df.index:
+        show_df = show_df.drop(index="Imagem")
     st.dataframe(show_df, use_container_width=True)
+
+# Sidebar thumbs (galeria) ao final
+st.markdown("---")
+st.subheader("Galeria rápida (thumbnails)")
+thumb_cols = st.columns(6)
+for i, c in enumerate(ordered[:24]):  # limita a 24 thumbs para não pesar
+    r = build_record_for_month(df_site, c)
+    tgt = resolve_image_target(r.get("Imagem"), base_url)
+    label = pretty[c]
+    with thumb_cols[i % 6]:
+        if tgt:
+            st.image(tgt, caption=label, use_column_width=True)
+        else:
+            st.write(label)
