@@ -10,7 +10,7 @@ import streamlit as st
 # ===================== CONFIGURE AQUI =====================
 # Coloque aqui o endereço RAW do seu repositório (pasta raiz do repo):
 # Ex.: "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/SUA_BRANCH"
-DEFAULT_BASE_URL = "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/SUA_BRANCH"
+DEFAULT_BASE_URL = "https://raw.githubusercontent.com/dapsat100-star/geoportal/main"
 # =========================================================
 
 # Opcional: dependências de mapa (o app continua mesmo sem elas)
