@@ -7,11 +7,13 @@ from urllib.parse import quote
 import pandas as pd
 import streamlit as st
 
-# =============== ONE-TIME SETUP (only needed if you use file upload) ===============
-# If you will UPLOAD the Excel (not use RAW URL), set your repo base once here:
-DEFAULT_BASE_URL = ""  # e.g., "https://raw.githubusercontent.com/<user>/<repo>/<branch>"
+# ===================== CONFIGURE AQUI =====================
+# Coloque aqui o endereço RAW do seu repositório (pasta raiz do repo):
+# Ex.: "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/SUA_BRANCH"
+DEFAULT_BASE_URL = "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/SUA_BRANCH"
+# =========================================================
 
-# Optional map deps
+# Opcional: dependências de mapa (o app continua mesmo sem elas)
 try:
     import folium
     from streamlit_folium import st_folium
@@ -19,30 +21,14 @@ try:
 except Exception:
     HAVE_MAP = False
 
-st.set_page_config(page_title="Geoportal — Auto Image URL", layout="wide")
-st.title("📷 Geoportal de Metano — Auto-resolve de Imagens (sem Base URL manual)")
+st.set_page_config(page_title="Geoportal — Auto-imagem (base fixa)", layout="wide")
+st.title("📷 Geoportal de Metano — Imagem automática (upload do Excel)")
 
 with st.sidebar:
-    st.header("📁 Fonte dos Dados")
-    excel_url = st.text_input("RAW URL do Excel (.xlsx) no GitHub (opcional):",
-                              placeholder="https://raw.githubusercontent.com/<user>/<repo>/<branch>/bancodados.xlsx")
-    uploaded = st.file_uploader("Ou faça upload do Excel (.xlsx)", type=["xlsx"])
-
-def infer_base_url_from_excel(raw_url: str) -> str:
-    """Infer base URL as the parent directory of the raw Excel file."""
-    if raw_url and "raw.githubusercontent.com" in raw_url:
-        u = raw_url.split("?", 1)[0].split("#", 1)[0]
-        if "/" in u:
-            return u.rsplit("/", 1)[0]
-    return ""
-
-@st.cache_data
-def read_excel_from_url(url: str) -> Dict[str, pd.DataFrame]:
-    import requests, io
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    xls = pd.ExcelFile(io.BytesIO(r.content), engine="openpyxl")
-    return {sn: pd.read_excel(xls, sheet_name=sn, engine="openpyxl") for sn in xls.sheet_names}
+    st.header("📁 Suba o Excel")
+    uploaded = st.file_uploader("Upload do Excel (.xlsx)", type=["xlsx"])
+    st.caption("O app vai montar as URLs das figuras como "
+               f"`{DEFAULT_BASE_URL}/images/<arquivo>` automaticamente.")
 
 @st.cache_data
 def read_excel_from_bytes(file_bytes) -> Dict[str, pd.DataFrame]:
@@ -50,41 +36,40 @@ def read_excel_from_bytes(file_bytes) -> Dict[str, pd.DataFrame]:
     return {sn: pd.read_excel(xls, sheet_name=sn, engine="openpyxl") for sn in xls.sheet_names}
 
 def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
-    cols = []
-    for i, c in enumerate(df.columns):
+    # Garante nomes canônicos
+    cols = list(df.columns)
+    if cols:
+        cols[0] = "Parametro"  # força a primeira coluna a ser 'Parametro' (mesmo que venha 'Unnamed: 0')
+    normed = []
+    for i, c in enumerate(cols):
         s = str(c).strip()
-        if i == 0 and s.lower() in ("parametro", "parâmetro"):
-            cols.append("Parametro")
-        elif s.lower() in ("lat", "latitude"):
-            cols.append("Lat")
+        if s.lower() in ("lat", "latitude"):
+            normed.append("Lat")
         elif s.lower() in ("long", "lon", "longitude"):
-            cols.append("Long")
+            normed.append("Long")
         else:
-            cols.append(c)
-    df.columns = cols
+            normed.append(s)
+    df.columns = normed
     return df
 
 def extract_dates_from_first_row(df: pd.DataFrame) -> Tuple[List[str], Dict[str, str]]:
     cols = list(df.columns)
+    # detecta a coluna 'Data' (ou posição 3 como fallback)
     try:
         data_idx = cols.index("Data")
     except ValueError:
-        data_idx = next((i for i, c in enumerate(cols) if str(c).strip().lower() == "data"), 3)
-
+        data_idx = 3 if len(cols) > 3 else 0
     date_cols = cols[data_idx:]
-    pretty: Dict[str, str] = {}
+    pretty = {}
     for c in date_cols:
         v = df.loc[0, c] if 0 in df.index else None
         label = None
         if pd.notna(v):
-            try:
-                dt = pd.to_datetime(v, dayfirst=True, errors="raise")
-                label = dt.strftime("%Y-%m-%d")
-            except Exception:
-                s = str(v).strip()
+            for dayfirst in (True, False):
                 try:
-                    dt = pd.to_datetime(s, dayfirst=True, errors="raise")
+                    dt = pd.to_datetime(v, dayfirst=dayfirst, errors="raise")
                     label = dt.strftime("%Y-%m-%d")
+                    break
                 except Exception:
                     pass
         if not label:
@@ -109,13 +94,8 @@ def build_record_for_month(df: pd.DataFrame, date_col: str) -> Dict[str, Optiona
     rec["_long"] = lon_val
     return rec
 
-def resolve_image_target(path_str: str, base_url: str) -> Optional[str]:
-    """Return a displayable URL:
-       - Normalizes backslashes -> '/'
-       - Strips leading './'
-       - If relative and base_url provided -> join
-       - URL-encodes unsafe chars
-    """
+def resolve_image_target(path_str: str) -> Optional[str]:
+    """Monta URL final da imagem usando DEFAULT_BASE_URL."""
     if path_str is None or (isinstance(path_str, float) and pd.isna(path_str)):
         return None
     s = str(path_str).strip()
@@ -124,38 +104,31 @@ def resolve_image_target(path_str: str, base_url: str) -> Optional[str]:
     s = s.replace("\\", "/")
     if s.startswith("./"):
         s = s[2:]
+    # Se já for URL absoluta, usa direto
     if s.lower().startswith(("http://", "https://")):
         return quote(s, safe=":/._-%")
-    if base_url.strip():
-        left = base_url.rstrip("/")
-        right = s.lstrip("/")
-        full = f"{left}/{right}"
-        return quote(full, safe=":/._-%")
-    return None
+    # Caso contrário, trata como relativo ao repo (images/...)
+    left = DEFAULT_BASE_URL.rstrip("/")
+    right = s.lstrip("/")
+    full = f"{left}/{right}"
+    return quote(full, safe=":/._-%")
 
-# 1) Load data + auto base URL
-book = {}
-auto_base_url = ""
-if excel_url.strip():
-    auto_base_url = infer_base_url_from_excel(excel_url.strip())
-    try:
-        book = read_excel_from_url(excel_url.strip())
-    except Exception as e:
-        st.error(f"Falha ao baixar/ler o Excel da URL. Detalhe: {e}")
-        st.stop()
-elif uploaded is not None:
-    try:
-        book = read_excel_from_bytes(uploaded)
-    except Exception as e:
-        st.error(f"Falha ao ler o Excel enviado. Detalhe: {e}")
-        st.stop()
-else:
-    st.info("Forneça o RAW URL do Excel ou faça upload do arquivo.")
+# === Fluxo principal ===
+if uploaded is None:
+    st.info("Faça o upload do seu Excel (`.xlsx`) no painel lateral.")
     st.stop()
 
+# Lê o workbook inteiro
+try:
+    book = read_excel_from_bytes(uploaded)
+except Exception as e:
+    st.error(f"Falha ao ler o Excel enviado. Detalhe: {e}")
+    st.stop()
+
+# Normaliza colunas
 book = {name: normalize_cols(df.copy()) for name, df in book.items()}
 
-# 2) Site/date selection
+# Seleção de site e data
 site = st.selectbox("Selecione o Site", sorted(book.keys()))
 df_site = book[site]
 date_cols, pretty = extract_dates_from_first_row(df_site)
@@ -164,28 +137,24 @@ labels = [pretty[c] for c in ordered]
 selected_label = st.selectbox("Selecione a data", labels)
 selected_col = ordered[labels.index(selected_label)]
 
-# 3) Effective base URL
-effective_base = auto_base_url if excel_url.strip() else DEFAULT_BASE_URL
-
-# 4) Layout: image (hero) + details
+# Layout: imagem destaque + detalhes + opcional mapa
 left, right = st.columns([2,1])
 
 with left:
     rec = build_record_for_month(df_site, selected_col)
-    img = resolve_image_target(rec.get("Imagem"), effective_base)
+    img = resolve_image_target(rec.get("Imagem"))
     st.subheader(f"Imagem — {site} — {selected_label}")
     if img:
         st.image(img, use_column_width=True)
     else:
         st.error("Imagem não encontrada para essa data.")
         with st.expander("🔎 Diagnóstico"):
-            st.write("- Valor lido na linha `Imagem`:", rec.get("Imagem"))
-            st.write("- Base inferida do Excel RAW:", auto_base_url or "(não aplicável)")
-            st.write("- DEFAULT_BASE_URL (upload):", DEFAULT_BASE_URL or "(vazio)")
+            st.write("- Valor na linha `Imagem`:", rec.get("Imagem"))
+            st.write("- DEFAULT_BASE_URL:", DEFAULT_BASE_URL or "(vazio)")
             if rec.get("Imagem"):
-                st.write("- URL que seria tentada (se base existir):")
-                tmp = resolve_image_target(rec.get("Imagem"), auto_base_url or DEFAULT_BASE_URL or "")
-                st.code(tmp or "(sem base URL)")
+                tmp = resolve_image_target(rec.get("Imagem"))
+                st.write("- URL tentada:")
+                st.code(tmp or "(sem URL)")
 
     if HAVE_MAP and (rec.get("_lat") is not None and rec.get("_long") is not None):
         with st.expander("🗺️ Mostrar mapa (opcional)", expanded=False):
@@ -228,6 +197,6 @@ with right:
     show_df.columns = ["Valor"]
     if "Imagem" in show_df.index:
         show_df = show_df.drop(index="Imagem")
-    # Avoid PyArrow type issues: render as string
+    # Evita erro do PyArrow: renderiza como string
     show_df = show_df.applymap(lambda v: "" if (pd.isna(v)) else str(v))
     st.dataframe(show_df, use_container_width=True)
