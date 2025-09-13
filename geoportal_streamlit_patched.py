@@ -1,4 +1,3 @@
-
 import io
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -6,6 +5,7 @@ from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt  # ← NOVO: para os gráficos
 
 # ===================== CONFIGURE AQUI =====================
 # Coloque aqui o endereço RAW do seu repositório (pasta raiz do repo):
@@ -52,7 +52,12 @@ def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = normed
     return df
 
-def extract_dates_from_first_row(df: pd.DataFrame) -> Tuple[List[str], Dict[str, str]]:
+def extract_dates_from_first_row(df: pd.DataFrame) -> Tuple[List[str], Dict[str, str], List[pd.Timestamp]]:
+    """Retorna:
+       - lista de colunas de datas,
+       - map col->rótulo bonito (YYYY-MM-DD),
+       - lista de timestamps alinhada à lista de colunas (para ordenar/plotar).
+    """
     cols = list(df.columns)
     # detecta a coluna 'Data' (ou posição 3 como fallback)
     try:
@@ -61,14 +66,17 @@ def extract_dates_from_first_row(df: pd.DataFrame) -> Tuple[List[str], Dict[str,
         data_idx = 3 if len(cols) > 3 else 0
     date_cols = cols[data_idx:]
     pretty = {}
+    dates_ts: List[pd.Timestamp] = []
     for c in date_cols:
         v = df.loc[0, c] if 0 in df.index else None
         label = None
+        ts = pd.NaT
         if pd.notna(v):
             for dayfirst in (True, False):
                 try:
                     dt = pd.to_datetime(v, dayfirst=dayfirst, errors="raise")
                     label = dt.strftime("%Y-%m-%d")
+                    ts = pd.to_datetime(label)
                     break
                 except Exception:
                     pass
@@ -76,10 +84,13 @@ def extract_dates_from_first_row(df: pd.DataFrame) -> Tuple[List[str], Dict[str,
             try:
                 dt = pd.to_datetime(str(c), dayfirst=True, errors="raise")
                 label = dt.strftime("%Y-%m")
+                ts = pd.to_datetime(label + "-01", errors="coerce")
             except Exception:
                 label = str(c)
+                ts = pd.NaT
         pretty[c] = label
-    return date_cols, pretty
+        dates_ts.append(ts)
+    return date_cols, pretty, dates_ts
 
 def build_record_for_month(df: pd.DataFrame, date_col: str) -> Dict[str, Optional[str]]:
     dfi = df.copy()
@@ -131,11 +142,16 @@ book = {name: normalize_cols(df.copy()) for name, df in book.items()}
 # Seleção de site e data
 site = st.selectbox("Selecione o Site", sorted(book.keys()))
 df_site = book[site]
-date_cols, pretty = extract_dates_from_first_row(df_site)
-ordered = sorted(date_cols, key=lambda c: pretty.get(c, str(c)))
-labels = [pretty[c] for c in ordered]
-selected_label = st.selectbox("Selecione a data", labels)
-selected_col = ordered[labels.index(selected_label)]
+date_cols, pretty, dates_ts = extract_dates_from_first_row(df_site)
+
+# Ordena pelas datas reais para o seletor
+order_idx = sorted(range(len(date_cols)), key=lambda i: (pd.Timestamp.min if pd.isna(dates_ts[i]) else dates_ts[i]))
+date_cols_sorted = [date_cols[i] for i in order_idx]
+labels_sorted = [pretty[date_cols[i]] for i in order_idx]
+dates_ts_sorted = [dates_ts[i] for i in order_idx]
+
+selected_label = st.selectbox("Selecione a data", labels_sorted)
+selected_col = date_cols_sorted[labels_sorted.index(selected_label)]
 
 # Layout: imagem destaque + detalhes + opcional mapa
 left, right = st.columns([2,1])
@@ -175,6 +191,7 @@ with right:
             if cand in dfi.index:
                 return dfi.loc[cand, selected_col]
         return None
+
     taxa = getv("Taxa Metano")
     inc = getv("Incerteza")
     vento = getv("Velocidade do Vento")
@@ -200,3 +217,46 @@ with right:
     # Evita erro do PyArrow: renderiza como string
     show_df = show_df.applymap(lambda v: "" if (pd.isna(v)) else str(v))
     st.dataframe(show_df, use_container_width=True)
+
+    # ===================== GRÁFICOS =====================
+    st.markdown("---")
+    st.subheader("Séries do site — Taxa de Metano")
+
+    # Monta série completa (todas as datas do site) para a linha "Taxa Metano"
+    # Mapeia index insensitive para acentos/caixa
+    idx_map = {i.lower(): i for i in dfi.index}
+    key = idx_map.get("taxa metano")
+    series_vals = []
+    series_dates = []
+    if key is not None:
+        for i, col in enumerate(date_cols_sorted):
+            val = dfi.loc[key, col] if col in dfi.columns else None
+            # tenta converter a número
+            try:
+                num = pd.to_numeric(val)
+            except Exception:
+                try:
+                    num = float(val)
+                except Exception:
+                    num = None
+            if pd.notna(num):
+                series_vals.append(float(num))
+                series_dates.append(dates_ts_sorted[i])
+
+    if series_vals:
+        # Gráfico de linha (1 plot por figura, sem definir cores)
+        fig1 = plt.figure()
+        plt.plot(series_dates, series_vals, marker='o')
+        plt.xlabel("Data")
+        plt.ylabel("Taxa de Metano")
+        plt.tight_layout()
+        st.pyplot(fig1)
+
+        # Boxplot da distribuição
+        fig2 = plt.figure()
+        plt.boxplot(series_vals, vert=True)
+        plt.ylabel("Taxa de Metano")
+        plt.tight_layout()
+        st.pyplot(fig2)
+    else:
+        st.info("Sem valores numéricos de 'Taxa Metano' para plotar nas datas deste site.")
