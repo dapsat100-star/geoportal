@@ -2,6 +2,7 @@
 import io
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -14,7 +15,7 @@ try:
 except Exception:
     HAVE_MAP = False
 
-st.set_page_config(page_title="Geoportal — Imagem em destaque", layout="wide")
+st.set_page_config(page_title="Geoportal — Imagem em destaque (auto Base URL)", layout="wide")
 st.title("📷 Geoportal de Metano — Imagem em destaque")
 
 with st.sidebar:
@@ -22,8 +23,17 @@ with st.sidebar:
     excel_url = st.text_input("RAW URL do Excel (.xlsx) no GitHub (opcional):",
                               placeholder="https://raw.githubusercontent.com/<user>/<repo>/<branch>/bancodados.xlsx")
     uploaded = st.file_uploader("Ou faça upload do Excel (.xlsx)", type=["xlsx"])
-    base_url = st.text_input("Base URL p/ imagens (obrigatório se ImagePath for relativo):",
-                             placeholder="https://raw.githubusercontent.com/<user>/<repo>/<branch>")
+    base_url_input = st.text_input("Base URL p/ imagens (opcional — será inferida da RAW URL se vazio):",
+                                   placeholder="https://raw.githubusercontent.com/<user>/<repo>/<branch>")
+
+def infer_base_url_from_excel(raw_url: str) -> str:
+    """If excel_url is a RAW GitHub URL, infer base URL as the parent directory of the file."""
+    if raw_url and "raw.githubusercontent.com" in raw_url:
+        # strip query/fragments just in case
+        u = raw_url.split("?", 1)[0].split("#", 1)[0]
+        if "/" in u:
+            return u.rsplit("/", 1)[0]
+    return ""
 
 @st.cache_data
 def read_excel_from_url(url: str) -> Dict[str, pd.DataFrame]:
@@ -99,41 +109,64 @@ def build_record_for_month(df: pd.DataFrame, date_col: str) -> Dict[str, Optiona
     return rec
 
 def resolve_image_target(path_str: str, base_url: str) -> Optional[str]:
+    """Return a displayable URL for the image.
+       - Normalizes backslashes -> '/'
+       - Strips leading './'
+       - If relative and base_url provided -> join
+       - URL-encodes path segments (spaces etc.) but keeps '/', ':', '.', '_' and '-' safe
+    """
     if path_str is None or (isinstance(path_str, float) and pd.isna(path_str)):
         return None
     s = str(path_str).strip()
     if not s:
         return None
+    s = s.replace("\\", "/")
+    if s.startswith("./"):
+        s = s[2:]
     if s.lower().startswith(("http://", "https://")):
-        return s
+        # encode only unsafe chars (avoid double-encoding '/')
+        return quote(s, safe=":/._-%")
     if base_url.strip():
-        return f"{base_url.rstrip('/')}/{s.lstrip('/')}"
+        left = base_url.rstrip("/")
+        right = s.lstrip("/")
+        full = f"{left}/{right}"
+        return quote(full, safe=":/._-%")
     return None
 
-# Carrega workbook
+# 1) Carrega dados
 book = {}
+base_url = base_url_input.strip()
 if excel_url.strip():
-    book = read_excel_from_url(excel_url.strip())
+    # Infer base URL if user didn't supply one
+    if not base_url:
+        base_url = infer_base_url_from_excel(excel_url.strip())
+    try:
+        book = read_excel_from_url(excel_url.strip())
+    except Exception as e:
+        st.error(f"Falha ao baixar/ler o Excel da URL. Detalhe: {e}")
+        st.stop()
 elif uploaded is not None:
-    book = read_excel_from_bytes(uploaded)
+    try:
+        book = read_excel_from_bytes(uploaded)
+    except Exception as e:
+        st.error(f"Falha ao ler o Excel enviado. Detalhe: {e}")
+        st.stop()
 else:
     st.info("Forneça o RAW URL do Excel ou faça upload do arquivo.")
     st.stop()
 
 book = {name: normalize_cols(df.copy()) for name, df in book.items()}
 
-# Select site
+# 2) Seletor
 site = st.selectbox("Selecione o Site", sorted(book.keys()))
 df_site = book[site]
-
-# Dates
 date_cols, pretty = extract_dates_from_first_row(df_site)
 ordered = sorted(date_cols, key=lambda c: pretty.get(c, str(c)))
 labels = [pretty[c] for c in ordered]
 selected_label = st.selectbox("Selecione a data", labels)
 selected_col = ordered[labels.index(selected_label)]
 
-# Two columns: left = IMAGE (hero), right = KPIs/table, with optional MAP in expander
+# 3) Layout: imagem destaque + detalhes
 left, right = st.columns([2,1])
 
 with left:
@@ -142,14 +175,24 @@ with left:
     st.subheader(f"Imagem — {site} — {selected_label}")
     if img:
         st.image(img, use_column_width=True)
+        with st.expander("🔎 Ver URL resolvida da imagem"):
+            st.code(img)
+            st.markdown(f"[Abrir em nova aba]({img})")
     else:
-        st.warning("Imagem não encontrada para essa data (verifique a linha 'Imagem' e a Base URL).")
+        st.error("Imagem não encontrada para essa data.")
+        # Mostra diagnóstico útil
+        st.write("**Diagnóstico rápido**")
+        st.write("- Valor lido na linha `Imagem`:", rec.get("Imagem"))
+        if not base_url:
+            inferred = infer_base_url_from_excel(excel_url.strip()) if excel_url.strip() else ""
+            st.write("- Base URL atual: *(vazia)*")
+            if inferred:
+                st.write(f"- Sugestão (inferida da RAW URL): `{inferred}`")
+        else:
+            st.write(f"- Base URL atual: `{base_url}`")
 
-    # Optional map under an expander
     if HAVE_MAP and (rec.get("_lat") is not None and rec.get("_long") is not None):
         with st.expander("🗺️ Mostrar mapa (opcional)", expanded=False):
-            import folium
-            from streamlit_folium import st_folium
             m = folium.Map(location=[float(rec["_lat"]), float(rec["_long"])], zoom_start=13, tiles="OpenStreetMap")
             folium.Marker([float(rec["_lat"]), float(rec["_long"])], tooltip=site).add_to(m)
             st_folium(m, height=400, use_container_width=True)
@@ -162,7 +205,6 @@ with right:
     dfi["Parametro"] = dfi["Parametro"].astype(str).str.strip()
     dfi = dfi.set_index("Parametro", drop=True)
 
-    # KPIs
     def getv(name):
         for cand in (name, name.capitalize(), name.title(), name.replace("ç","c").replace("á","a")):
             if cand in dfi.index:
@@ -188,21 +230,6 @@ with right:
     st.caption("Tabela completa (parâmetro → valor):")
     show_df = dfi[[selected_col]].copy()
     show_df.columns = ["Valor"]
-    # Oculta a linha 'Imagem' na tabela para não poluir
     if "Imagem" in show_df.index:
         show_df = show_df.drop(index="Imagem")
     st.dataframe(show_df, use_container_width=True)
-
-# Sidebar thumbs (galeria) ao final
-st.markdown("---")
-st.subheader("Galeria rápida (thumbnails)")
-thumb_cols = st.columns(6)
-for i, c in enumerate(ordered[:24]):  # limita a 24 thumbs para não pesar
-    r = build_record_for_month(df_site, c)
-    tgt = resolve_image_target(r.get("Imagem"), base_url)
-    label = pretty[c]
-    with thumb_cols[i % 6]:
-        if tgt:
-            st.image(tgt, caption=label, use_column_width=True)
-        else:
-            st.write(label)
