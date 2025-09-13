@@ -1,4 +1,3 @@
-
 import io
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -232,4 +231,7 @@ with right:
     show_df.columns = ["Valor"]
     if "Imagem" in show_df.index:
         show_df = show_df.drop(index="Imagem")
+    # Evita erro do PyArrow quando a coluna tem tipos mistos (número, data, texto)
+    show_df = show_df.applymap(lambda v: "" if (pd.isna(v)) else str(v))
     st.dataframe(show_df, use_container_width=True)
+
