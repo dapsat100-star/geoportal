@@ -1,3 +1,4 @@
+
 import io
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -5,6 +6,10 @@ from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
+
+# =============== ONE-TIME SETUP (only needed if you use file upload) ===============
+# If you will UPLOAD the Excel (not use RAW URL), set your repo base once here:
+DEFAULT_BASE_URL = ""  # e.g., "https://raw.githubusercontent.com/<user>/<repo>/<branch>"
 
 # Optional map deps
 try:
@@ -14,21 +19,18 @@ try:
 except Exception:
     HAVE_MAP = False
 
-st.set_page_config(page_title="Geoportal — Imagem em destaque (auto Base URL)", layout="wide")
-st.title("📷 Geoportal de Metano — Imagem em destaque")
+st.set_page_config(page_title="Geoportal — Auto Image URL", layout="wide")
+st.title("📷 Geoportal de Metano — Auto-resolve de Imagens (sem Base URL manual)")
 
 with st.sidebar:
     st.header("📁 Fonte dos Dados")
     excel_url = st.text_input("RAW URL do Excel (.xlsx) no GitHub (opcional):",
                               placeholder="https://raw.githubusercontent.com/<user>/<repo>/<branch>/bancodados.xlsx")
     uploaded = st.file_uploader("Ou faça upload do Excel (.xlsx)", type=["xlsx"])
-    base_url_input = st.text_input("Base URL p/ imagens (opcional — será inferida da RAW URL se vazio):",
-                                   placeholder="https://raw.githubusercontent.com/<user>/<repo>/<branch>")
 
 def infer_base_url_from_excel(raw_url: str) -> str:
-    """If excel_url is a RAW GitHub URL, infer base URL as the parent directory of the file."""
+    """Infer base URL as the parent directory of the raw Excel file."""
     if raw_url and "raw.githubusercontent.com" in raw_url:
-        # strip query/fragments just in case
         u = raw_url.split("?", 1)[0].split("#", 1)[0]
         if "/" in u:
             return u.rsplit("/", 1)[0]
@@ -108,11 +110,11 @@ def build_record_for_month(df: pd.DataFrame, date_col: str) -> Dict[str, Optiona
     return rec
 
 def resolve_image_target(path_str: str, base_url: str) -> Optional[str]:
-    """Return a displayable URL for the image.
+    """Return a displayable URL:
        - Normalizes backslashes -> '/'
        - Strips leading './'
        - If relative and base_url provided -> join
-       - URL-encodes path segments (spaces etc.) but keeps '/', ':', '.', '_' and '-' safe
+       - URL-encodes unsafe chars
     """
     if path_str is None or (isinstance(path_str, float) and pd.isna(path_str)):
         return None
@@ -123,7 +125,6 @@ def resolve_image_target(path_str: str, base_url: str) -> Optional[str]:
     if s.startswith("./"):
         s = s[2:]
     if s.lower().startswith(("http://", "https://")):
-        # encode only unsafe chars (avoid double-encoding '/')
         return quote(s, safe=":/._-%")
     if base_url.strip():
         left = base_url.rstrip("/")
@@ -132,13 +133,11 @@ def resolve_image_target(path_str: str, base_url: str) -> Optional[str]:
         return quote(full, safe=":/._-%")
     return None
 
-# 1) Carrega dados
+# 1) Load data + auto base URL
 book = {}
-base_url = base_url_input.strip()
+auto_base_url = ""
 if excel_url.strip():
-    # Infer base URL if user didn't supply one
-    if not base_url:
-        base_url = infer_base_url_from_excel(excel_url.strip())
+    auto_base_url = infer_base_url_from_excel(excel_url.strip())
     try:
         book = read_excel_from_url(excel_url.strip())
     except Exception as e:
@@ -156,7 +155,7 @@ else:
 
 book = {name: normalize_cols(df.copy()) for name, df in book.items()}
 
-# 2) Seletor
+# 2) Site/date selection
 site = st.selectbox("Selecione o Site", sorted(book.keys()))
 df_site = book[site]
 date_cols, pretty = extract_dates_from_first_row(df_site)
@@ -165,30 +164,28 @@ labels = [pretty[c] for c in ordered]
 selected_label = st.selectbox("Selecione a data", labels)
 selected_col = ordered[labels.index(selected_label)]
 
-# 3) Layout: imagem destaque + detalhes
+# 3) Effective base URL
+effective_base = auto_base_url if excel_url.strip() else DEFAULT_BASE_URL
+
+# 4) Layout: image (hero) + details
 left, right = st.columns([2,1])
 
 with left:
     rec = build_record_for_month(df_site, selected_col)
-    img = resolve_image_target(rec.get("Imagem"), base_url)
+    img = resolve_image_target(rec.get("Imagem"), effective_base)
     st.subheader(f"Imagem — {site} — {selected_label}")
     if img:
         st.image(img, use_column_width=True)
-        with st.expander("🔎 Ver URL resolvida da imagem"):
-            st.code(img)
-            st.markdown(f"[Abrir em nova aba]({img})")
     else:
         st.error("Imagem não encontrada para essa data.")
-        # Mostra diagnóstico útil
-        st.write("**Diagnóstico rápido**")
-        st.write("- Valor lido na linha `Imagem`:", rec.get("Imagem"))
-        if not base_url:
-            inferred = infer_base_url_from_excel(excel_url.strip()) if excel_url.strip() else ""
-            st.write("- Base URL atual: *(vazia)*")
-            if inferred:
-                st.write(f"- Sugestão (inferida da RAW URL): `{inferred}`")
-        else:
-            st.write(f"- Base URL atual: `{base_url}`")
+        with st.expander("🔎 Diagnóstico"):
+            st.write("- Valor lido na linha `Imagem`:", rec.get("Imagem"))
+            st.write("- Base inferida do Excel RAW:", auto_base_url or "(não aplicável)")
+            st.write("- DEFAULT_BASE_URL (upload):", DEFAULT_BASE_URL or "(vazio)")
+            if rec.get("Imagem"):
+                st.write("- URL que seria tentada (se base existir):")
+                tmp = resolve_image_target(rec.get("Imagem"), auto_base_url or DEFAULT_BASE_URL or "")
+                st.code(tmp or "(sem base URL)")
 
     if HAVE_MAP and (rec.get("_lat") is not None and rec.get("_long") is not None):
         with st.expander("🗺️ Mostrar mapa (opcional)", expanded=False):
@@ -231,7 +228,6 @@ with right:
     show_df.columns = ["Valor"]
     if "Imagem" in show_df.index:
         show_df = show_df.drop(index="Imagem")
-    # Evita erro do PyArrow quando a coluna tem tipos mistos (número, data, texto)
+    # Avoid PyArrow type issues: render as string
     show_df = show_df.applymap(lambda v: "" if (pd.isna(v)) else str(v))
     st.dataframe(show_df, use_container_width=True)
-
