@@ -145,7 +145,7 @@ with left:
     img = resolve_image_target(rec.get("Imagem"))
     st.subheader(f"Imagem — {site} — {selected_label}")
     if img:
-        st.image(img, use_column_width=True)
+        st.image(img, use_container_width=True)
     else:
         st.error("Imagem não encontrada para essa data.")
         with st.expander("🔎 Diagnóstico"):
