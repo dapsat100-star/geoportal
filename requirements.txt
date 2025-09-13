@@ -4,3 +4,4 @@ openpyxl
 requests
 folium
 streamlit-folium
+matplotlib
