@@ -269,11 +269,10 @@ if not series_raw.empty:
     st.plotly_chart(fig_box, use_container_width=True)
 else:
     st.info("Sem dados suficientes para boxplots mensais.")
-# ===================== PDF CLIENT-SIDE (sem Kaleido) =====================
 import streamlit.components.v1 as components
 
 st.markdown("### 📄 Exportar")
-st.caption("Gere um PDF com a tela atual diretamente no seu navegador (não requer Chrome no servidor).")
+st.caption("Gere um PDF com a tela atual diretamente no seu navegador.")
 
 components.html("""
 <div style="margin: 10px 0;">
@@ -286,24 +285,19 @@ components.html("""
   </button>
 </div>
 
-<!-- bibliotecas -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"
- integrity="sha512-BNaRQnQ9G2c9qXW5iQn9s6sG1iQ3AZyQwS7oR2q5b9y2n1LkT4b9l7dCk7mYwJxJw8y5rH0W5m1m5wR3m0Jb9w=="
- crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"
- integrity="sha512-YkW2HCMH3mYcH1Yp6f2x7Q3r2qzXyC0x1oM3r5eJgYt5wQz2dYF7bH0P8Q8XoYyq7cCwQy3VBy6v3yD1XkA7Kw=="
- crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<!-- libs -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
 <script>
 const btn = document.getElementById("btn-captura");
 
 btn?.addEventListener("click", async () => {
   const { jsPDF } = window.jspdf;
-
-  // Captura toda a área do app
   const target = document.body;
+
   const canvas = await html2canvas(target, {
-    scale: 2,         // mais nítido
+    scale: 2,
     useCORS: true,
     logging: false,
     windowWidth: document.documentElement.scrollWidth,
@@ -311,8 +305,6 @@ btn?.addEventListener("click", async () => {
   });
 
   const imgData = canvas.toDataURL("image/png");
-
-  // Dimensões página A4
   const pdf = new jsPDF("p", "pt", "a4");
   const pageW = pdf.internal.pageSize.getWidth();
   const pageH = pdf.internal.pageSize.getHeight();
@@ -327,8 +319,14 @@ btn?.addEventListener("click", async () => {
     posY += pageH;
   }
 
-  pdf.save("geoportal_captura.pdf");
+  // 🔹 forçar download via link oculto
+  const pdfBlob = pdf.output("blob");
+  const url = URL.createObjectURL(pdfBlob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "geoportal_captura.pdf";
+  a.click();
+  URL.revokeObjectURL(url);
 });
 </script>
-""", height=80)
-# =================== FIM PDF CLIENT-SIDE ===================
+""", height=100)
