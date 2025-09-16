@@ -6,3 +6,6 @@ requests
 folium
 streamlit-folium
 plotly
+kaleido
+reportlab
+
