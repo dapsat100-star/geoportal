@@ -271,3 +271,28 @@ else:
     st.info("Sem dados suficientes para boxplots mensais.")
 import streamlit.components.v1 as components
 
+import streamlit as st
+import streamlit.components.v1 as components
+
+# CSS de impressão (esconde sidebar/header/rodapé e otimiza margens)
+st.markdown("""
+<style>
+@media print {
+  section[data-testid="stSidebar"], header, footer { display:none !important; }
+  .print-controls { display:none !important; }
+  .block-container { padding-top:0 !important; padding-bottom:0 !important; }
+}
+/* botões flutuantes */
+.print-controls{position:fixed;right:16px;bottom:16px;z-index:9999;display:flex;gap:8px}
+.print-btn{background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 14px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+.print-btn:hover{opacity:.9}
+</style>
+""", unsafe_allow_html=True)
+
+components.html("""
+<div class="print-controls">
+  <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>
+</div>
+""", height=0)
+
+
