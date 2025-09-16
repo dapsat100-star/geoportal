@@ -272,98 +272,139 @@ else:
 import streamlit.components.v1 as components
 
 ##########################################################################################################################
-# ========== GERAR RELATÓRIO EM PDF (server-side, sem print screen) ==========
+# ========= PDF com LOGO no canto superior direito =========
 import io
+from datetime import datetime
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
-from datetime import datetime
+from urllib.request import urlopen
 
-def export_plotly_png(fig, w=1200, h=700):
-    if fig is None: 
-        return None
-    return fig.to_image(format="png", width=w, height=h, engine="kaleido")
+def _image_reader_from_url(url: str):
+    """Tenta abrir uma URL e devolver ImageReader + (w,h). Retorna (None, 0, 0) se falhar."""
+    try:
+        with urlopen(url, timeout=10) as resp:
+            img = ImageReader(resp)  # aceita file-like
+            w, h = img.getSize()
+            return img, w, h
+    except Exception:
+        return None, 0, 0
 
-def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2):
+def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
+                     logo_rel_path: str = "images/logomavipe.jpeg") -> bytes:
+    """
+    Monta PDF A4 com:
+      - logo pequeno no canto superior direito
+      - cabeçalho (título, site, data, timestamp)
+      - métricas (Taxa, Incerteza, Vento)
+      - imagem principal (do Excel) se houver
+      - dois gráficos Plotly (linha e boxplots), exportados via kaleido
+    """
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     W, H = A4
     margin = 40
     y = H - margin
 
-    # Cabeçalho
+    # ========= LOGO no canto superior direito =========
+    try:
+        logo_url = f"{DEFAULT_BASE_URL.rstrip('/')}/{logo_rel_path.lstrip('/')}"
+        logo_img, lw, lh = _image_reader_from_url(logo_url)
+        if logo_img:
+            max_w, max_h = 80, 40  # tamanho pequeno
+            scale = min(max_w / lw, max_h / lh)
+            w, h = lw * scale, lh * scale
+            c.drawImage(logo_img, W - margin - w, H - margin - h,
+                        width=w, height=h, mask='auto')
+    except Exception:
+        pass  # logo é opcional
+
+    # ========= Cabeçalho =========
     c.setFont("Helvetica-Bold", 16)
     c.drawString(margin, y, "Relatório Geoportal de Metano")
     y -= 20
     c.setFont("Helvetica", 10)
-    c.drawString(margin, y, f"Site: {site} | Data: {date}")
+    c.drawString(margin, y, f"Site: {site}  |  Data: {date}")
     y -= 12
     c.drawString(margin, y, f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     y -= 30
 
-    # Métricas
+    # ========= Métricas =========
+    def _s(v):
+        return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
     c.setFont("Helvetica-Bold", 12)
     c.drawString(margin, y, "Métricas")
     y -= 16
     c.setFont("Helvetica", 11)
-    c.drawString(margin, y, f"• Taxa Metano: {taxa}")
-    y -= 14
-    c.drawString(margin, y, f"• Incerteza: {inc}")
-    y -= 14
-    c.drawString(margin, y, f"• Vento: {vento}")
-    y -= 30
+    c.drawString(margin, y, f"• Taxa Metano: {_s(taxa)}");   y -= 14
+    c.drawString(margin, y, f"• Incerteza: {_s(inc)}");       y -= 14
+    c.drawString(margin, y, f"• Velocidade do Vento: {_s(vento)}"); y -= 26
 
-    # Imagem principal (se houver)
+    # ========= Imagem principal (do Excel), se houver =========
     if img_url:
         try:
-            import requests
-            r = requests.get(img_url, stream=True)
-            if r.status_code == 200:
-                img = ImageReader(r.raw)
-                iw, ih = img.getSize()
+            main_img, iw, ih = _image_reader_from_url(img_url)
+            if main_img:
                 max_w, max_h = W - 2*margin, 200
                 scale = min(max_w/iw, max_h/ih)
                 w, h = iw*scale, ih*scale
-                c.drawImage(img, margin, y-h, w, h)
+                c.drawImage(main_img, margin, y - h, width=w, height=h, mask='auto')
                 y -= h + 20
-        except Exception as e:
-            c.setFont("Helvetica", 9)
-            c.drawString(margin, y, f"[Erro ao carregar imagem: {e}]")
-            y -= 20
+        except Exception:
+            y -= 0  # ignora, segue
 
-    # Gráfico 1
-    if fig1:
-        img1 = ImageReader(io.BytesIO(export_plotly_png(fig1)))
-        iw, ih = img1.getSize()
-        scale = min((W-2*margin)/iw, 250/ih)
-        w, h = iw*scale, ih*scale
-        c.drawImage(img1, margin, y-h, w, h)
-        y -= h + 20
+    # ========= Gráfico 1 (linha) =========
+    try:
+        if fig1 is not None:
+            png1 = fig1.to_image(format="png", width=1400, height=800, scale=2, engine="kaleido")
+            img1 = ImageReader(io.BytesIO(png1))
+            iw, ih = img1.getSize()
+            max_w, max_h = W - 2*margin, 260
+            scale = min(max_w/iw, max_h/ih)
+            w, h = iw*scale, ih*scale
+            c.drawImage(img1, margin, y - h, width=w, height=h, mask='auto')
+            y -= h + 18
+    except Exception as e:
+        c.setFont("Helvetica", 9)
+        c.drawString(margin, y, f"[Falha ao exportar gráfico 1: {e}]")
+        y -= 14
 
-    # Gráfico 2 (se couber, senão quebra página)
-    if fig2:
-        img2 = ImageReader(io.BytesIO(export_plotly_png(fig2)))
-        iw, ih = img2.getSize()
-        scale = min((W-2*margin)/iw, 250/ih)
-        w, h = iw*scale, ih*scale
-        if y - h < margin:
-            c.showPage(); y = H - margin
-        c.drawImage(img2, margin, y-h, w, h)
-        y -= h + 20
+    # ========= Gráfico 2 (boxplots) =========
+    try:
+        if fig2 is not None:
+            png2 = fig2.to_image(format="png", width=1400, height=900, scale=2, engine="kaleido")
+            img2 = ImageReader(io.BytesIO(png2))
+            iw2, ih2 = img2.getSize()
+            max_w, max_h = W - 2*margin, 260
+            scale2 = min(max_w/iw2, max_h/ih2)
+            w2, h2 = iw2*scale2, ih2*scale2
+
+            if y - h2 < margin:
+                c.showPage(); y = H - margin
+                # redesenha o logo pequeno na nova página (opcional)
+                try:
+                    if logo_img:
+                        c.drawImage(logo_img, W - margin - w, H - margin - h,
+                                    width=w, height=h, mask='auto')
+                except Exception:
+                    pass
+
+            c.drawImage(img2, margin, y - h2, width=w2, height=h2, mask='auto')
+            y -= h2 + 12
+    except Exception as e:
+        c.setFont("Helvetica", 9)
+        c.drawString(margin, y, f"[Falha ao exportar gráfico 2: {e}]")
+        y -= 14
+
+    # ========= Rodapé =========
+    c.setFont("Helvetica", 8)
+    c.setFillColorRGB(0.45, 0.45, 0.45)
+    c.drawRightString(W - margin, margin/2,
+                      "© Geoportal — Relatório gerado automaticamente")
+    c.setFillColorRGB(0, 0, 0)
 
     c.showPage()
     c.save()
     buf.seek(0)
     return buf.getvalue()
-
-# === Botão para gerar ===
-taxa = getv("Taxa Metano")
-inc  = getv("Incerteza")
-vento = getv("Velocidade do Vento")
-img_url = resolve_image_target(rec.get("Imagem"))
-
-if st.button("📄 Gerar Relatório PDF (dados + gráficos)", use_container_width=True):
-    pdf_bytes = build_report_pdf(site, selected_label, taxa, inc, vento, img_url, fig_line, fig_box)
-    st.download_button("⬇️ Baixar PDF", data=pdf_bytes,
-                       file_name=f"relatorio_{site}_{selected_label}.pdf".replace(" ", "_"),
-                       mime="application/pdf", use_container_width=True)
+# ======= Fim da função com logo =======
