@@ -1,12 +1,10 @@
-streamlit
 pandas
 numpy
+streamlit
+plotly==5.13.1
+kaleido==0.2.1
+reportlab
 openpyxl
-requests
 folium
 streamlit-folium
-plotly
-kaleido
-reportlab
-streamlit-js-eval
 
