@@ -408,3 +408,42 @@ def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
     buf.seek(0)
     return buf.getvalue()
 # ======= Fim da função com logo =======
+# ===================== EXPORTAR PDF =====================
+# Coleta dos valores atuais para o relatório
+taxa  = getv("Taxa Metano")
+inc   = getv("Incerteza")
+vento = getv("Velocidade do Vento")
+img_url = resolve_image_target(rec.get("Imagem"))
+
+# Garante as figuras (podem não existir se não houve dados)
+fig1 = 'fig_line' in locals() and fig_line or None
+fig2 = 'fig_box'  in locals() and fig_box  or None
+
+st.markdown("---")
+st.subheader("📄 Exportar PDF")
+st.caption("Gera um PDF com logo, cabeçalho, métricas, imagem e gráficos atuais.")
+
+# 1º clique: gera o PDF em memória
+if st.button("Gerar PDF (dados + gráficos)", type="primary", use_container_width=True):
+    pdf_bytes = build_report_pdf(
+        site=site,
+        date=selected_label,
+        taxa=taxa,
+        inc=inc,
+        vento=vento,
+        img_url=img_url,
+        fig1=fig1,
+        fig2=fig2,
+        logo_rel_path="images/logomavipe.jpeg"   # ajuste se o arquivo tiver outro nome/pasta
+    )
+
+    # 2º botão: baixa o arquivo gerado
+    st.download_button(
+        label="⬇️ Baixar PDF",
+        data=pdf_bytes,
+        file_name=f"relatorio_geoportal_{site}_{selected_label}.pdf".replace(" ", "_"),
+        mime="application/pdf",
+        use_container_width=True
+    )
+# =================== FIM EXPORTAR PDF ===================
+
