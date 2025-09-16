@@ -274,25 +274,64 @@ import streamlit.components.v1 as components
 import streamlit as st
 import streamlit.components.v1 as components
 
-# CSS de impressão (esconde sidebar/header/rodapé e otimiza margens)
-st.markdown("""
-<style>
-@media print {
-  section[data-testid="stSidebar"], header, footer { display:none !important; }
-  .print-controls { display:none !important; }
-  .block-container { padding-top:0 !important; padding-bottom:0 !important; }
-}
-/* botões flutuantes */
-.print-controls{position:fixed;right:16px;bottom:16px;z-index:9999;display:flex;gap:8px}
-.print-btn{background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 14px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.15)}
-.print-btn:hover{opacity:.9}
-</style>
-""", unsafe_allow_html=True)
+import streamlit as st
+from streamlit_js_eval import streamlit_js_eval
 
-components.html("""
-<div class="print-controls">
-  <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>
-</div>
-""", height=0)
+st.markdown("### 📄 Exportar")
+if st.button("📄 Baixar PDF (captura da tela)", type="primary", use_container_width=True):
+    streamlit_js_eval(js_expressions=r"""
+(async () => {
+  // carrega libs se ainda não existirem
+  if (!window.html2canvas) {
+    await new Promise((res,rej)=>{
+      const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+      s.onload=res; s.onerror=rej; document.head.appendChild(s);
+    });
+  }
+  if (!window.jspdf) {
+    await new Promise((res,rej)=>{
+      const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      s.onload=res; s.onerror=rej; document.head.appendChild(s);
+    });
+  }
+  const { jsPDF } = window.jspdf;
 
+  // alvo: área principal do Streamlit
+  const app = document.querySelector('main .block-container') || document.body;
 
+  // aguarda próximo frame para garantir layout estável
+  await new Promise(r=>requestAnimationFrame(r));
+
+  const canvas = await html2canvas(app, {
+    scale: 2, useCORS: true, logging: false,
+    windowWidth: document.documentElement.scrollWidth,
+    windowHeight: document.documentElement.scrollHeight,
+    backgroundColor: '#FFFFFF'
+  });
+
+  const imgData = canvas.toDataURL('image/png');
+  const pdf = new jsPDF('p','pt','a4');
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  const imgW = pageW;
+  const imgH = canvas.height * pageW / canvas.width;
+
+  let y = 0;
+  while (y < imgH) {
+    if (y > 0) pdf.addPage();
+    pdf.addImage(imgData, 'PNG', 0, -y, imgW, imgH);
+    y += pageH;
+  }
+
+  // força download (funciona fora do iframe)
+  const blob = pdf.output('blob');
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'geoportal_captura.pdf';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  return "ok";
+})()
+""", key="make_pdf_capture")
