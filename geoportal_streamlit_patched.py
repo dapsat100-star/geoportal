@@ -272,3 +272,157 @@ else:
 import streamlit.components.v1 as components
 
 ##########################################################################################################################
+# ======= PDF ROBUSTO (client-side com Plotly.toImage + jsPDF) =======
+import streamlit as st
+from streamlit_js_eval import streamlit_js_eval
+
+# Exponha valores que quer no cabeçalho do PDF (aproveita suas métricas)
+def _safe(v):
+    return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+
+m_taxa   = _safe(getv('Taxa Metano'))
+m_inc    = _safe(getv('Incerteza'))
+m_vento  = _safe(getv('Velocidade do Vento'))
+
+# Elementos invisíveis só para o JS ler
+st.markdown(
+    f"""
+    <div id="pdf_site" style="display:none">{site}</div>
+    <div id="pdf_data" style="display:none">{selected_label}</div>
+    <div id="pdf_taxa" style="display:none">{m_taxa}</div>
+    <div id="pdf_inc" style="display:none">{m_inc}</div>
+    <div id="pdf_vento" style="display:none">{m_vento}</div>
+    """,
+    unsafe_allow_html=True
+)
+
+st.markdown("### 📄 Exportar")
+st.caption("Gera um PDF com título, métricas e os gráficos (sem Kaleido).")
+if st.button("📄 Gerar PDF (robusto)", type="primary", use_container_width=True):
+    streamlit_js_eval(js_expressions=r"""
+(async () => {
+  // Carrega jsPDF se necessário
+  if (!window.jspdf) {
+    await new Promise((res,rej)=>{
+      const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      s.onload=res; s.onerror=rej; document.head.appendChild(s);
+    });
+  }
+  // Garante Plotly global (normalmente já existe no Streamlit)
+  if (!window.Plotly) {
+    await new Promise((res,rej)=>{
+      const s=document.createElement('script');
+      s.src='https://cdn.plot.ly/plotly-2.29.1.min.js';
+      s.onload=res; s.onerror=rej; document.head.appendChild(s);
+    });
+  }
+  const { jsPDF } = window.jspdf;
+
+  // Lê os dados para o cabeçalho
+  const txt = (id)=> (document.getElementById(id)?.textContent || "—");
+  const site  = txt('pdf_site');
+  const data  = txt('pdf_data');
+  const taxa  = txt('pdf_taxa');
+  const inc   = txt('pdf_inc');
+  const vento = txt('pdf_vento');
+
+  // Encontra os gráficos Plotly da página (primeiros dois)
+  const plots = Array.from(document.querySelectorAll('.js-plotly-plot')).slice(0, 2);
+  // Exporta cada um para PNG (alta resolução)
+  const images = [];
+  for (const el of plots) {
+    try {
+      const url = await window.Plotly.toImage(el, {format:'png', width:1400, height:800, scale:2});
+      images.push(url);
+    } catch(e) {
+      console.error('Falha ao exportar gráfico:', e);
+    }
+  }
+
+  // Monta PDF A4
+  const pdf = new jsPDF('p','pt','a4'); // 595x842 pt
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  const margin = 36;
+  let y = margin;
+
+  // Cabeçalho
+  pdf.setFont('helvetica','bold'); pdf.setFontSize(16);
+  pdf.text('Geoportal de Metano — Relatório', margin, y); y += 18;
+  pdf.setFont('helvetica','normal'); pdf.setFontSize(10);
+  pdf.setTextColor(120);
+  pdf.text(`Site: ${site}   |   Data: ${data}`, margin, y); y += 16;
+  pdf.setTextColor(0);
+
+  // Métricas
+  pdf.setFont('helvetica','bold'); pdf.setFontSize(12);
+  pdf.text('Métricas', margin, y); y += 16;
+  pdf.setFont('helvetica','normal'); pdf.setFontSize(11);
+  const linhas = [
+    `• Taxa Metano: ${taxa}`,
+    `• Incerteza: ${inc}`,
+    `• Velocidade do Vento: ${vento}`
+  ];
+  for (const ln of linhas) { pdf.text(ln, margin, y); y += 14; }
+  y += 6;
+
+  // Insere imagens dos gráficos
+  for (let i=0; i<images.length; i++) {
+    const img = images[i];
+    // carrega imagem para medir
+    const im = new Image(); im.src = img;
+    await new Promise((r, rr)=>{
+      im.onload = r; im.onerror = rr;
+    });
+    const iw = im.naturalWidth, ih = im.naturalHeight;
+    const maxW = pageW - 2*margin;
+    const maxH = pageH - 2*margin - y;
+    let w = maxW, h = ih * (w/iw);
+    if (h > maxH) { h = maxH; w = iw * (h/ih); }
+
+    // quebra de página se não couber
+    if (y + h > pageH - margin) { pdf.addPage(); y = margin; }
+
+    pdf.addImage(img, 'PNG', (pageW - w)/2, y, w, h, undefined, 'FAST');
+    y += h + 12;
+
+    if (i === 0 && images.length > 1) {
+      pdf.setFont('helvetica','bold'); pdf.setFontSize(11);
+      if (y + 18 > pageH - margin) { pdf.addPage(); y = margin; }
+      pdf.text('Boxplots por mês + média mensal', margin, y);
+      y += 14;
+    }
+  }
+
+  // Rodapé
+  pdf.setFont('helvetica','normal'); pdf.setFontSize(8); pdf.setTextColor(120);
+  pdf.text('© Geoportal — Relatório gerado no navegador (Plotly.toImage + jsPDF)', pageW - margin, pageH - 10, {align:'right'});
+
+  // Download
+  const blob = pdf.output('blob');
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `relatorio_geoportal_${site}_${data}.pdf`.replace(/\s+/g,'_');
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  return "ok";
+})()
+""", key="make_pdf_plotly_toimage")
+# ======= FIM PDF ROBUSTO =======
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
