@@ -1,6 +1,5 @@
-
+# app_streamlit_geoportal.py
 import io
-from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
 import numpy as np
@@ -9,9 +8,10 @@ import streamlit as st
 import plotly.graph_objects as go
 
 # ===================== CONFIGURE AQUI =====================
-# Coloque aqui o endereço RAW do seu repositório (pasta raiz do repo):
-# Ex.: "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/SUA_BRANCH"
+# Base RAW do seu repositório (pasta raiz):
 DEFAULT_BASE_URL = "https://raw.githubusercontent.com/dapsat100-star/geoportal/main"
+# Caminho do logo dentro do repo (relativo à raiz acima)
+LOGO_REL_PATH = "images/logomavipe.jpeg"
 # =========================================================
 
 # Opcional: dependências de mapa (o app continua mesmo sem elas)
@@ -22,9 +22,18 @@ try:
 except Exception:
     HAVE_MAP = False
 
+# -------- PDF deps --------
+from datetime import datetime
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
+from urllib.request import urlopen
+# --------------------------
+
 st.set_page_config(page_title="Geoportal — Plotly", layout="wide")
 st.title("📷 Geoportal de Metano — versão Plotly (clean + interativo)")
 
+# ================= Sidebar =================
 with st.sidebar:
     st.header("📁 Suba o Excel")
     uploaded = st.file_uploader("Upload do Excel (.xlsx)", type=["xlsx"])
@@ -38,6 +47,7 @@ with st.sidebar:
         show_trend = st.checkbox("Mostrar tendência linear", value=False)
         show_conf = st.checkbox("Mostrar banda P10–P90", value=False)
 
+# ================= Helpers =================
 @st.cache_data
 def read_excel_from_bytes(file_bytes) -> Dict[str, pd.DataFrame]:
     xls = pd.ExcelFile(file_bytes, engine="openpyxl")
@@ -45,13 +55,17 @@ def read_excel_from_bytes(file_bytes) -> Dict[str, pd.DataFrame]:
 
 def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
     cols = list(df.columns)
-    if cols: cols[0] = "Parametro"
+    if cols:
+        cols[0] = "Parametro"
     normed = []
     for c in cols:
         s = str(c).strip()
-        if s.lower() in ("lat","latitude"): normed.append("Lat")
-        elif s.lower() in ("long","lon","longitude"): normed.append("Long")
-        else: normed.append(s)
+        if s.lower() in ("lat","latitude"):
+            normed.append("Lat")
+        elif s.lower() in ("long","lon","longitude"):
+            normed.append("Long")
+        else:
+            normed.append(s)
     df.columns = normed
     return df
 
@@ -69,14 +83,22 @@ def extract_dates_from_first_row(df: pd.DataFrame) -> Tuple[List[str], Dict[str,
         if pd.notna(v):
             for dayfirst in (True, False):
                 try:
-                    dt = pd.to_datetime(v, dayfirst=dayfirst, errors="raise"); label = dt.strftime("%Y-%m-%d"); ts = pd.to_datetime(label); break
-                except Exception: pass
+                    dt = pd.to_datetime(v, dayfirst=dayfirst, errors="raise")
+                    label = dt.strftime("%Y-%m-%d")
+                    ts = pd.to_datetime(label)
+                    break
+                except Exception:
+                    pass
         if not label:
             try:
-                dt = pd.to_datetime(str(c), dayfirst=True, errors="raise"); label = dt.strftime("%Y-%m"); ts = pd.to_datetime(label + "-01", errors="coerce")
+                dt = pd.to_datetime(str(c), dayfirst=True, errors="raise")
+                label = dt.strftime("%Y-%m")
+                ts = pd.to_datetime(label + "-01", errors="coerce")
             except Exception:
-                label = str(c); ts = pd.NaT
-        labels[c] = label; stamps.append(ts)
+                label = str(c)
+                ts = pd.NaT
+        labels[c] = label
+        stamps.append(ts)
     return date_cols, labels, stamps
 
 def build_record_for_month(df: pd.DataFrame, date_col: str) -> Dict[str, Optional[str]]:
@@ -91,14 +113,17 @@ def build_record_for_month(df: pd.DataFrame, date_col: str) -> Dict[str, Optiona
     return rec
 
 def resolve_image_target(path_str: str) -> Optional[str]:
-    if path_str is None or (isinstance(path_str, float) and pd.isna(path_str)): return None
+    if path_str is None or (isinstance(path_str, float) and pd.isna(path_str)):
+        return None
     s = str(path_str).strip()
-    if not s: return None
-    s = s.replace("\\","/"); s = s[2:] if s.startswith("./") else s
-    if s.lower().startswith(("http://","https://")): return s
+    if not s:
+        return None
+    s = s.replace("\\","/")
+    s = s[2:] if s.startswith("./") else s
+    if s.lower().startswith(("http://","https://")):
+        return s
     return f"{DEFAULT_BASE_URL.rstrip('/')}/{s.lstrip('/')}"
 
-# Helpers para série temporal
 def extract_series(dfi: pd.DataFrame, date_cols_sorted, dates_ts_sorted, row_name="Taxa Metano"):
     idx_map = {i.lower(): i for i in dfi.index}
     key = idx_map.get(row_name.lower())
@@ -106,17 +131,21 @@ def extract_series(dfi: pd.DataFrame, date_cols_sorted, dates_ts_sorted, row_nam
     if key is not None:
         for i, col in enumerate(date_cols_sorted):
             val = dfi.loc[key, col] if col in dfi.columns else None
-            try: num = float(pd.to_numeric(val))
-            except Exception: num = None
+            try:
+                num = float(pd.to_numeric(val))
+            except Exception:
+                num = None
             ts = dates_ts_sorted[i]
             if pd.notna(num) and pd.notna(ts):
                 rows.append({"date": ts, "value": float(num)})
     s = pd.DataFrame(rows)
-    if not s.empty: s = s.sort_values("date").reset_index(drop=True)
+    if not s.empty:
+        s = s.sort_values("date").reset_index(drop=True)
     return s
 
 def resample_and_smooth(s: pd.DataFrame, freq_code: str, agg: str, smooth: str, window: int):
-    if s.empty: return s
+    if s.empty:
+        return s
     s2 = s.set_index("date").asfreq("D")
     agg_fn = {"média":"mean","mediana":"median","máx":"max","mín":"min"}[agg]
     out = getattr(s2.resample(freq_code), agg_fn)().dropna().reset_index()
@@ -126,7 +155,7 @@ def resample_and_smooth(s: pd.DataFrame, freq_code: str, agg: str, smooth: str, 
         out["value"] = out["value"].ewm(span=window, adjust=False).mean()
     return out
 
-# === Fluxo principal ===
+# =============== Fluxo principal ===============
 if uploaded is None:
     st.info("Faça o upload do seu Excel (`.xlsx`) no painel lateral.")
     st.stop()
@@ -178,8 +207,10 @@ with right:
 
     def getv(name):
         for cand in (name, name.capitalize(), name.title(), name.replace("ç","c").replace("á","a")):
-            if cand in dfi.index: return dfi.loc[cand, selected_col]
+            if cand in dfi.index:
+                return dfi.loc[cand, selected_col]
         return None
+
     k1, k2, k3 = st.columns(3)
     k1.metric("Taxa Metano", f"{getv('Taxa Metano')}" if pd.notna(getv('Taxa Metano')) else "—")
     k2.metric("Incerteza", f"{getv('Incerteza')}" if pd.notna(getv('Incerteza')) else "—")
@@ -189,7 +220,8 @@ with right:
     st.caption("Tabela completa (parâmetro → valor):")
     table_df = dfi[[selected_col]].copy()
     table_df.columns = ["Valor"]
-    if "Imagem" in table_df.index: table_df = table_df.drop(index="Imagem")
+    if "Imagem" in table_df.index:
+        table_df = table_df.drop(index="Imagem")
     table_df = table_df.applymap(lambda v: "" if (pd.isna(v)) else str(v))
     st.dataframe(table_df, use_container_width=True)
 
@@ -200,15 +232,11 @@ series_raw = extract_series(dfi, date_cols_sorted, stamps_sorted)
 freq_code = {"Diário":"D","Semanal":"W","Mensal":"M","Trimestral":"Q"}[freq]
 series = resample_and_smooth(series_raw, freq_code, agg, smooth, window)
 
+fig_line = None
 if not series.empty:
-    # Linha principal
     fig_line = go.Figure()
-    fig_line.add_trace(go.Scatter(
-        x=series["date"], y=series["value"],
-        mode="lines+markers", name="Taxa Metano"
-    ))
+    fig_line.add_trace(go.Scatter(x=series["date"], y=series["value"], mode="lines+markers", name="Taxa Metano"))
 
-    # Banda P10–P90 (opcional, calculada global na série agregada)
     if show_conf and len(series) >= 3:
         p10 = series["value"].quantile(0.10)
         p90 = series["value"].quantile(0.90)
@@ -218,108 +246,79 @@ if not series.empty:
             fill='toself', opacity=0.15, line=dict(width=0), name="P10–P90"
         ))
 
-    # Tendência linear (OLS simples)
     if show_trend and len(series) >= 2:
         x = (series["date"] - series["date"].min()).dt.days.values.astype(float)
-        y = series["value"].values.astype(float)
-        coeffs = np.polyfit(x, y, 1); line = np.poly1d(coeffs)
-        fig_line.add_trace(go.Scatter(
-            x=series["date"], y=line(x), mode="lines", name="Tendência", line=dict(dash="dash")
-        ))
+        yvals = series["value"].values.astype(float)
+        coeffs = np.polyfit(x, yvals, 1); line = np.poly1d(coeffs)
+        fig_line.add_trace(go.Scatter(x=series["date"], y=line(x), mode="lines", name="Tendência", line=dict(dash="dash")))
 
-    fig_line.update_layout(
-        template="plotly_white",
-        xaxis_title="Data",
-        yaxis_title="Taxa de Metano",
-        margin=dict(l=10, r=10, t=30, b=10),
-        height=380
-    )
+    fig_line.update_layout(template="plotly_white", xaxis_title="Data", yaxis_title="Taxa de Metano",
+                           margin=dict(l=10, r=10, t=30, b=10), height=380)
     st.plotly_chart(fig_line, use_container_width=True)
 else:
     st.info("Sem dados numéricos para a série temporal.")
 
-# Boxplots mensais + média mensal
+# Boxplots + média mensal
 st.markdown("### Boxplots por mês + média mensal (site)")
+fig_box = None
 if not series_raw.empty:
     dfm = series_raw.copy()
     dfm["month"] = dfm["date"].dt.to_period("M").dt.to_timestamp()
     order_months = sorted(dfm["month"].unique())
-    # Boxplots por mês (uma trace por mês)
+
     fig_box = go.Figure()
     for m in order_months:
         vals = dfm.loc[dfm["month"] == m, "value"]
         fig_box.add_trace(go.Box(y=vals, name=m.strftime("%Y-%m"), boxmean="sd"))
 
-    # Linha da média mensal
     mean_by_month = dfm.groupby("month")["value"].mean().reindex(order_months)
-    fig_box.add_trace(go.Scatter(
-        x=[m.strftime("%Y-%m") for m in order_months],
-        y=mean_by_month.values,
-        mode="lines+markers",
-        name="Média mensal"
-    ))
+    fig_box.add_trace(go.Scatter(x=[m.strftime("%Y-%m") for m in order_months],
+                                 y=mean_by_month.values, mode="lines+markers", name="Média mensal"))
 
-    fig_box.update_layout(
-        template="plotly_white",
-        yaxis_title="Taxa de Metano",
-        margin=dict(l=10, r=10, t=30, b=10),
-        height=420,
-        boxmode="group"
-    )
+    fig_box.update_layout(template="plotly_white", yaxis_title="Taxa de Metano",
+                          margin=dict(l=10, r=10, t=30, b=10), height=420, boxmode="group")
     st.plotly_chart(fig_box, use_container_width=True)
 else:
     st.info("Sem dados suficientes para boxplots mensais.")
-import streamlit.components.v1 as components
 
-##########################################################################################################################
-# ========= PDF com LOGO no canto superior direito =========
-import io
-from datetime import datetime
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.utils import ImageReader
-from urllib.request import urlopen
-
+# ===================== PDF: helpers =====================
 def _image_reader_from_url(url: str):
-    """Tenta abrir uma URL e devolver ImageReader + (w,h). Retorna (None, 0, 0) se falhar."""
+    """Abre uma URL e devolve (ImageReader, w, h)."""
     try:
         with urlopen(url, timeout=10) as resp:
-            img = ImageReader(resp)  # aceita file-like
+            img = ImageReader(resp)
             w, h = img.getSize()
             return img, w, h
     except Exception:
         return None, 0, 0
 
+def _draw_logo_top_right(c, page_w, page_h, margin, logo_img, lw, lh, max_w=80, max_h=40):
+    """Desenha o logo pequeno no canto superior direito da página atual."""
+    if not logo_img:
+        return
+    scale = min(max_w / lw, max_h / lh)
+    lw_scaled, lh_scaled = lw * scale, lh * scale
+    x = page_w - margin - lw_scaled
+    y = page_h - margin - lh_scaled
+    c.drawImage(logo_img, x, y, width=lw_scaled, height=lh_scaled, mask='auto')
+
 def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
-                     logo_rel_path: str = "images/logomavipe.jpeg") -> bytes:
-    """
-    Monta PDF A4 com:
-      - logo pequeno no canto superior direito
-      - cabeçalho (título, site, data, timestamp)
-      - métricas (Taxa, Incerteza, Vento)
-      - imagem principal (do Excel) se houver
-      - dois gráficos Plotly (linha e boxplots), exportados via kaleido
-    """
+                     logo_rel_path: str = LOGO_REL_PATH) -> bytes:
+    """Monta PDF A4 com logo fixo no topo direito de cada página, dados e gráficos."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     W, H = A4
     margin = 40
     y = H - margin
 
-    # ========= LOGO no canto superior direito =========
-    try:
-        logo_url = f"{DEFAULT_BASE_URL.rstrip('/')}/{logo_rel_path.lstrip('/')}"
-        logo_img, lw, lh = _image_reader_from_url(logo_url)
-        if logo_img:
-            max_w, max_h = 80, 40  # tamanho pequeno
-            scale = min(max_w / lw, max_h / lh)
-            w, h = lw * scale, lh * scale
-            c.drawImage(logo_img, W - margin - w, H - margin - h,
-                        width=w, height=h, mask='auto')
-    except Exception:
-        pass  # logo é opcional
+    # Carrega logo uma vez
+    logo_url = f"{DEFAULT_BASE_URL.rstrip('/')}/{logo_rel_path.lstrip('/')}"
+    logo_img, logo_w, logo_h = _image_reader_from_url(logo_url)
 
-    # ========= Cabeçalho =========
+    # ===== Página 1 =====
+    _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h, max_w=80, max_h=40)
+
+    # Cabeçalho
     c.setFont("Helvetica-Bold", 16)
     c.drawString(margin, y, "Relatório Geoportal de Metano")
     y -= 20
@@ -329,49 +328,52 @@ def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
     c.drawString(margin, y, f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     y -= 30
 
-    # ========= Métricas =========
+    # Métricas
     def _s(v):
         return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
     c.setFont("Helvetica-Bold", 12)
     c.drawString(margin, y, "Métricas")
     y -= 16
     c.setFont("Helvetica", 11)
-    c.drawString(margin, y, f"• Taxa Metano: {_s(taxa)}");   y -= 14
-    c.drawString(margin, y, f"• Incerteza: {_s(inc)}");       y -= 14
-    c.drawString(margin, y, f"• Velocidade do Vento: {_s(vento)}"); y -= 26
+    for line in (f"• Taxa Metano: {_s(taxa)}",
+                 f"• Incerteza: {_s(inc)}",
+                 f"• Velocidade do Vento: {_s(vento)}"):
+        c.drawString(margin, y, line)
+        y -= 14
+    y -= 12
 
-    # ========= Imagem principal (do Excel), se houver =========
+    # Imagem principal (do Excel), se houver
     if img_url:
-        try:
-            main_img, iw, ih = _image_reader_from_url(img_url)
-            if main_img:
-                max_w, max_h = W - 2*margin, 200
-                scale = min(max_w/iw, max_h/ih)
-                w, h = iw*scale, ih*scale
-                c.drawImage(main_img, margin, y - h, width=w, height=h, mask='auto')
-                y -= h + 20
-        except Exception:
-            y -= 0  # ignora, segue
+        main_img, iw, ih = _image_reader_from_url(img_url)
+        if main_img:
+            max_w, max_h = W - 2*margin, 200
+            scale = min(max_w/iw, max_h/ih)
+            w, h = iw*scale, ih*scale
+            c.drawImage(main_img, margin, y - h, width=w, height=h, mask='auto')
+            y -= h + 18
 
-    # ========= Gráfico 1 (linha) =========
-    try:
-        if fig1 is not None:
+    # Gráfico 1 (linha)
+    if fig1 is not None:
+        try:
             png1 = fig1.to_image(format="png", width=1400, height=800, scale=2, engine="kaleido")
             img1 = ImageReader(io.BytesIO(png1))
             iw, ih = img1.getSize()
             max_w, max_h = W - 2*margin, 260
             scale = min(max_w/iw, max_h/ih)
             w, h = iw*scale, ih*scale
+            if y - h < margin:
+                c.showPage(); y = H - margin
+                _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h, max_w=80, max_h=40)
             c.drawImage(img1, margin, y - h, width=w, height=h, mask='auto')
             y -= h + 18
-    except Exception as e:
-        c.setFont("Helvetica", 9)
-        c.drawString(margin, y, f"[Falha ao exportar gráfico 1: {e}]")
-        y -= 14
+        except Exception as e:
+            c.setFont("Helvetica", 9)
+            c.drawString(margin, y, f"[Falha ao exportar gráfico 1: {e}]")
+            y -= 14
 
-    # ========= Gráfico 2 (boxplots) =========
-    try:
-        if fig2 is not None:
+    # Gráfico 2 (boxplots)
+    if fig2 is not None:
+        try:
             png2 = fig2.to_image(format="png", width=1400, height=900, scale=2, engine="kaleido")
             img2 = ImageReader(io.BytesIO(png2))
             iw2, ih2 = img2.getSize()
@@ -381,49 +383,36 @@ def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
 
             if y - h2 < margin:
                 c.showPage(); y = H - margin
-                # redesenha o logo pequeno na nova página (opcional)
-                try:
-                    if logo_img:
-                        c.drawImage(logo_img, W - margin - w, H - margin - h,
-                                    width=w, height=h, mask='auto')
-                except Exception:
-                    pass
+                _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h, max_w=80, max_h=40)
 
             c.drawImage(img2, margin, y - h2, width=w2, height=h2, mask='auto')
             y -= h2 + 12
-    except Exception as e:
-        c.setFont("Helvetica", 9)
-        c.drawString(margin, y, f"[Falha ao exportar gráfico 2: {e}]")
-        y -= 14
+        except Exception as e:
+            c.setFont("Helvetica", 9)
+            c.drawString(margin, y, f"[Falha ao exportar gráfico 2: {e}]")
+            y -= 14
 
-    # ========= Rodapé =========
+    # Rodapé
     c.setFont("Helvetica", 8)
     c.setFillColorRGB(0.45, 0.45, 0.45)
-    c.drawRightString(W - margin, margin/2,
-                      "© Geoportal — Relatório gerado automaticamente")
+    c.drawRightString(W - margin, margin/2, "© Geoportal — Relatório gerado automaticamente")
     c.setFillColorRGB(0, 0, 0)
 
     c.showPage()
     c.save()
     buf.seek(0)
     return buf.getvalue()
-# ======= Fim da função com logo =======
-# ===================== EXPORTAR PDF =====================
-# Coleta dos valores atuais para o relatório
+
+# ===================== Exportar PDF (UI) =====================
 taxa  = getv("Taxa Metano")
 inc   = getv("Incerteza")
 vento = getv("Velocidade do Vento")
 img_url = resolve_image_target(rec.get("Imagem"))
 
-# Garante as figuras (podem não existir se não houve dados)
-fig1 = 'fig_line' in locals() and fig_line or None
-fig2 = 'fig_box'  in locals() and fig_box  or None
-
 st.markdown("---")
 st.subheader("📄 Exportar PDF")
 st.caption("Gera um PDF com logo, cabeçalho, métricas, imagem e gráficos atuais.")
 
-# 1º clique: gera o PDF em memória
 if st.button("Gerar PDF (dados + gráficos)", type="primary", use_container_width=True):
     pdf_bytes = build_report_pdf(
         site=site,
@@ -432,12 +421,10 @@ if st.button("Gerar PDF (dados + gráficos)", type="primary", use_container_widt
         inc=inc,
         vento=vento,
         img_url=img_url,
-        fig1=fig1,
-        fig2=fig2,
-        logo_rel_path="images/logomavipe.jpeg"   # ajuste se o arquivo tiver outro nome/pasta
+        fig1=fig_line,
+        fig2=fig_box,
+        logo_rel_path=LOGO_REL_PATH
     )
-
-    # 2º botão: baixa o arquivo gerado
     st.download_button(
         label="⬇️ Baixar PDF",
         data=pdf_bytes,
@@ -445,5 +432,3 @@ if st.button("Gerar PDF (dados + gráficos)", type="primary", use_container_widt
         mime="application/pdf",
         use_container_width=True
     )
-# =================== FIM EXPORTAR PDF ===================
-
