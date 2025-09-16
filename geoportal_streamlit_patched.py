@@ -273,7 +273,7 @@ if not series_raw.empty:
 else:
     st.info("Sem dados suficientes para boxplots mensais.")
 
-# ===================== PDF: helpers =====================
+# ===================== PDF helpers =====================
 def _image_reader_from_url(url: str):
     try:
         with urlopen(url, timeout=10) as resp:
@@ -281,50 +281,92 @@ def _image_reader_from_url(url: str):
     except Exception:
         return None, 0, 0
 
-def _draw_logo_top_right(c, page_w, page_h, margin, logo_img, lw, lh, max_w=80, max_h=40):
-    if not logo_img: return
-    scale = min(max_w / lw, max_h / lh)
-    lw_s, lh_s = lw * scale, lh * scale
-    c.drawImage(logo_img, page_w - margin - lw_s, page_h - margin - lh_s,
-                width=lw_s, height=lh_s, mask='auto')
+def _draw_logo_scaled(c, x_right, y_top, logo_img, lw, lh, max_w=90, max_h=42):
+    if not logo_img: return 0, 0
+    scale = min(max_w/lw, max_h/lh)
+    w, h = lw*scale, lh*scale
+    c.drawImage(logo_img, x_right - w, y_top - h, width=w, height=h, mask='auto')
+    return w, h
 
+# ====== MODELO 2: HEADER BAND ======
 def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
                      logo_rel_path: str = LOGO_REL_PATH,
                      satellite: Optional[str] = None) -> bytes:
+    """
+    Relatório com FAIXA SUPERIOR (Header Band)
+    - Faixa 80pt cor primária, título/subtítulo em branco, logo à direita
+    - Separadores em cor de acento
+    - Imagem (se houver), gráfico linha e boxplots
+    - Rodapé com "pág X"
+    """
+    # Cores (RGB 0..1)
+    BAND   = (0x15/255, 0x5E/255, 0x75/255)   # #155E75
+    ACCENT = (0xF5/255, 0x9E/255, 0x0B/255)   # #F59E0B
+    GRAY   = (0x6B/255, 0x72/255, 0x80/255)   # #6B7280
+
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
-    W, H = A4; margin = 40; y = H - margin
+    W, H = A4
+    margin = 40
+    band_h = 80
 
-    # logo 1x
+    # carrega logo
     logo_url = f"{DEFAULT_BASE_URL.rstrip('/')}/{logo_rel_path.lstrip('/')}"
     logo_img, logo_w, logo_h = _image_reader_from_url(logo_url)
 
-    # página 1
-    _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h)
+    page_no = 0
+    def start_page():
+        nonlocal page_no
+        page_no += 1
+        # faixa superior
+        c.setFillColorRGB(*BAND)
+        c.rect(0, H-band_h, W, band_h, fill=1, stroke=0)
+        # logo na faixa
+        _draw_logo_scaled(c, x_right=W - margin, y_top=H - (band_h/2 - 14),
+                          logo_img=logo_img, lw=logo_w, lh=logo_h, max_w=90, max_h=42)
+        # título/subtítulo
+        c.setFillColorRGB(1, 1, 1)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(margin, H - band_h + 28, "Relatório Geoportal de Metano")
+        c.setFont("Helvetica", 10)
+        c.drawString(margin, H - band_h + 12,
+                     f"Site: {site}   |   Data: {date}   |   Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+        # separador cor acento
+        c.setFillColorRGB(0, 0, 0)
+        c.setStrokeColorRGB(*ACCENT); c.setLineWidth(1)
+        c.line(margin, H - band_h - 6, W - margin, H - band_h - 6)
+        c.setStrokeColorRGB(0, 0, 0)
+        # retorna y inicial
+        return H - band_h - 20
 
-    # Cabeçalho
-    c.setFont("Helvetica-Bold", 16); c.drawString(margin, y, "Relatório Geoportal de Metano"); y -= 20
-    c.setFont("Helvetica", 10); c.drawString(margin, y, f"Site: {site}  |  Data: {date}"); y -= 12
-    c.drawString(margin, y, f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}"); y -= 30
+    # primeira página
+    y = start_page()
+
+    def _s(v): return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
 
     # Métricas
-    def _s(v): return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
     c.setFont("Helvetica-Bold", 12); c.drawString(margin, y, "Métricas"); y -= 16
     c.setFont("Helvetica", 11)
-    for t in (f"• Taxa Metano: {_s(taxa)}",
-              f"• Incerteza: {_s(inc)}",
-              f"• Velocidade do Vento: {_s(vento)}",
-              f"• Satélite: {_s(satellite)}"):
-        c.drawString(margin, y, t); y -= 14
-    y -= 12
+    for line in (
+        f"• Taxa Metano: {_s(taxa)}",
+        f"• Incerteza: {_s(inc)}",
+        f"• Velocidade do Vento: {_s(vento)}",
+        f"• Satélite: {_s(satellite)}"
+    ):
+        c.drawString(margin, y, line); y -= 14
+    y -= 10
+    c.setStrokeColorRGB(*ACCENT); c.setLineWidth(0.7)
+    c.line(margin, y, W - margin, y); y -= 14
+    c.setStrokeColorRGB(0, 0, 0)
 
-    # Imagem do Excel
+    # Imagem principal
     if img_url:
         main_img, iw, ih = _image_reader_from_url(img_url)
         if main_img:
-            max_w, max_h = W - 2*margin, 200
+            max_w, max_h = W - 2*margin, 190
             s = min(max_w/iw, max_h/ih); w, h = iw*s, ih*s
-            if y - h < margin: c.showPage(); y = H - margin; _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h)
+            if y - h < margin + 30:
+                c.showPage(); y = start_page()
             c.drawImage(main_img, margin, y - h, width=w, height=h, mask='auto'); y -= h + 18
 
     # Gráfico 1
@@ -332,27 +374,31 @@ def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
         try:
             png1 = fig1.to_image(format="png", width=1400, height=800, scale=2, engine="kaleido")
             img1 = ImageReader(io.BytesIO(png1)); iw, ih = img1.getSize()
-            s = min((W - 2*margin)/iw, 260/ih); w, h = iw*s, ih*s
-            if y - h < margin: c.showPage(); y = H - margin; _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h)
-            c.drawImage(img1, margin, y - h, width=w, height=h, mask='auto'); y -= h + 18
+            max_w, max_h = W - 2*margin, 260
+            s = min(max_w/iw, max_h/ih); w, h = iw*s, ih*s
+            if y - h < margin + 30:
+                c.showPage(); y = start_page()
+            c.drawImage(img1, margin, y - h, width=w, height=h, mask='auto'); y -= h + 16
         except Exception as e:
-            c.setFont("Helvetica", 9); c.drawString(margin, y, f"[Falha gráfico 1: {e}]"); y -= 14
+            c.setFont("Helvetica", 9); c.drawString(margin, y, f"[Falha ao exportar gráfico 1: {e}]"); y -= 14
 
     # Gráfico 2
     if fig2 is not None:
         try:
             png2 = fig2.to_image(format="png", width=1400, height=900, scale=2, engine="kaleido")
             img2 = ImageReader(io.BytesIO(png2)); iw2, ih2 = img2.getSize()
-            s2 = min((W - 2*margin)/iw2, 260/ih2); w2, h2 = iw2*s2, ih2*s2
-            if y - h2 < margin: c.showPage(); y = H - margin; _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h)
+            max_w, max_h = W - 2*margin, 260
+            s2 = min(max_w/iw2, max_h/ih2); w2, h2 = iw2*s2, ih2*s2
+            if y - h2 < margin + 30:
+                c.showPage(); y = start_page()
             c.drawImage(img2, margin, y - h2, width=w2, height=h2, mask='auto'); y -= h2 + 12
         except Exception as e:
-            c.setFont("Helvetica", 9); c.drawString(margin, y, f"[Falha gráfico 2: {e}]"); y -= 14
+            c.setFont("Helvetica", 9); c.drawString(margin, y, f"[Falha ao exportar gráfico 2: {e}]"); y -= 14
 
-    # Rodapé
-    c.setFont("Helvetica", 8); c.setFillColorRGB(0.45, 0.45, 0.45)
-    c.drawRightString(W - margin, margin/2, "© Geoportal — Relatório gerado automaticamente")
-    c.setFillColorRGB(0,0,0)
+    # Rodapé (pág X)
+    c.setFont("Helvetica", 8); c.setFillColorRGB(*GRAY)
+    c.drawRightString(W - margin, 12, f"pág {page_no}")
+    c.setFillColorRGB(0, 0, 0)
 
     c.showPage(); c.save(); buf.seek(0)
     return buf.getvalue()
@@ -366,7 +412,7 @@ img_url   = resolve_image_target(rec.get("Imagem"))
 
 st.markdown("---")
 st.subheader("📄 Exportar PDF")
-st.caption("Gera um PDF com logo, cabeçalho, métricas (inclui Satélite), imagem e gráficos atuais.")
+st.caption("Relatório com faixa superior (Header Band), logo, métricas (inclui Satélite), imagem e gráficos atuais.")
 
 if st.button("Gerar PDF (dados + gráficos)", type="primary", use_container_width=True):
     pdf_bytes = build_report_pdf(
