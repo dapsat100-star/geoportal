@@ -8,13 +8,11 @@ import streamlit as st
 import plotly.graph_objects as go
 
 # ===================== CONFIGURE AQUI =====================
-# Base RAW do seu repositório (pasta raiz):
 DEFAULT_BASE_URL = "https://raw.githubusercontent.com/dapsat100-star/geoportal/main"
-# Caminho do logo dentro do repo (relativo à raiz acima)
-LOGO_REL_PATH = "images/logomavipe.jpeg"
+LOGO_REL_PATH    = "images/logomavipe.jpeg"   # <- ajuste se necessário
 # =========================================================
 
-# Opcional: dependências de mapa (o app continua mesmo sem elas)
+# Mapa (opcional)
 try:
     import folium
     from streamlit_folium import st_folium
@@ -22,13 +20,12 @@ try:
 except Exception:
     HAVE_MAP = False
 
-# -------- PDF deps --------
+# PDF deps
 from datetime import datetime
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 from urllib.request import urlopen
-# --------------------------
 
 st.set_page_config(page_title="Geoportal — Plotly", layout="wide")
 st.title("📷 Geoportal de Metano — versão Plotly (clean + interativo)")
@@ -303,7 +300,8 @@ def _draw_logo_top_right(c, page_w, page_h, margin, logo_img, lw, lh, max_w=80, 
     c.drawImage(logo_img, x, y, width=lw_scaled, height=lh_scaled, mask='auto')
 
 def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
-                     logo_rel_path: str = LOGO_REL_PATH) -> bytes:
+                     logo_rel_path: str = LOGO_REL_PATH,
+                     satellite: Optional[str] = None) -> bytes:
     """Monta PDF A4 com logo fixo no topo direito de cada página, dados e gráficos."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
@@ -335,9 +333,12 @@ def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
     c.drawString(margin, y, "Métricas")
     y -= 16
     c.setFont("Helvetica", 11)
-    for line in (f"• Taxa Metano: {_s(taxa)}",
-                 f"• Incerteza: {_s(inc)}",
-                 f"• Velocidade do Vento: {_s(vento)}"):
+    for line in (
+        f"• Taxa Metano: {_s(taxa)}",
+        f"• Incerteza: {_s(inc)}",
+        f"• Velocidade do Vento: {_s(vento)}",
+        f"• Satélite: {_s(satellite)}"
+    ):
         c.drawString(margin, y, line)
         y -= 14
     y -= 12
@@ -395,7 +396,7 @@ def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
     # Rodapé
     c.setFont("Helvetica", 8)
     c.setFillColorRGB(0.45, 0.45, 0.45)
-    c.drawRightString(W - margin, margin/2, "© DAPATLAS Geoportal — Relatório gerado automaticamente")
+    c.drawRightString(W - margin, margin/2, "© Geoportal — Relatório gerado automaticamente")
     c.setFillColorRGB(0, 0, 0)
 
     c.showPage()
@@ -404,14 +405,15 @@ def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
     return buf.getvalue()
 
 # ===================== Exportar PDF (UI) =====================
-taxa  = getv("Taxa Metano")
-inc   = getv("Incerteza")
-vento = getv("Velocidade do Vento")
-img_url = resolve_image_target(rec.get("Imagem"))
+taxa      = getv("Taxa Metano")
+inc       = getv("Incerteza")
+vento     = getv("Velocidade do Vento")
+satellite = getv("Satellite")  # <- NOVO
+img_url   = resolve_image_target(rec.get("Imagem"))
 
 st.markdown("---")
 st.subheader("📄 Exportar PDF")
-st.caption("Gera um PDF com logo, cabeçalho, métricas, imagem e gráficos atuais.")
+st.caption("Gera um PDF com logo, cabeçalho, métricas (inclui Satélite), imagem e gráficos atuais.")
 
 if st.button("Gerar PDF (dados + gráficos)", type="primary", use_container_width=True):
     pdf_bytes = build_report_pdf(
@@ -423,7 +425,8 @@ if st.button("Gerar PDF (dados + gráficos)", type="primary", use_container_widt
         img_url=img_url,
         fig1=fig_line,
         fig2=fig_box,
-        logo_rel_path=LOGO_REL_PATH
+        logo_rel_path=LOGO_REL_PATH,
+        satellite=satellite,             # <- NOVO
     )
     st.download_button(
         label="⬇️ Baixar PDF",
