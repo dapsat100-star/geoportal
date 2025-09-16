@@ -21,7 +21,7 @@ except Exception:
     HAVE_MAP = False
 
 # PDF deps
-from datetime import datetime
+from datetime import datetime, timezone
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
@@ -288,13 +288,14 @@ def _draw_logo_scaled(c, x_right, y_top, logo_img, lw, lh, max_w=90, max_h=42):
     c.drawImage(logo_img, x_right - w, y_top - h, width=w, height=h, mask='auto')
     return w, h
 
-# ====== MODELO 2: HEADER BAND ======
+# ====== MODELO 2: HEADER BAND (UTC) ======
 def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
                      logo_rel_path: str = LOGO_REL_PATH,
                      satellite: Optional[str] = None) -> bytes:
     """
     Relatório com FAIXA SUPERIOR (Header Band)
     - Faixa 80pt cor primária, título/subtítulo em branco, logo à direita
+    - Timestamp em UTC
     - Separadores em cor de acento
     - Imagem (se houver), gráfico linha e boxplots
     - Rodapé com "pág X"
@@ -318,24 +319,34 @@ def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
     def start_page():
         nonlocal page_no
         page_no += 1
+
         # faixa superior
         c.setFillColorRGB(*BAND)
         c.rect(0, H-band_h, W, band_h, fill=1, stroke=0)
+
         # logo na faixa
         _draw_logo_scaled(c, x_right=W - margin, y_top=H - (band_h/2 - 14),
                           logo_img=logo_img, lw=logo_w, lh=logo_h, max_w=90, max_h=42)
+
+        # timestamp UTC
+        ts_utc = datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M UTC')
+
         # título/subtítulo
         c.setFillColorRGB(1, 1, 1)
         c.setFont("Helvetica-Bold", 16)
         c.drawString(margin, H - band_h + 28, "Relatório Geoportal de Metano")
         c.setFont("Helvetica", 10)
-        c.drawString(margin, H - band_h + 12,
-                     f"Site: {site}   |   Data: {date}   |   Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+        c.drawString(
+            margin, H - band_h + 12,
+            f"Site: {site}   |   Data: {date}   |   Gerado em: {ts_utc}"
+        )
+
         # separador cor acento
         c.setFillColorRGB(0, 0, 0)
         c.setStrokeColorRGB(*ACCENT); c.setLineWidth(1)
         c.line(margin, H - band_h - 6, W - margin, H - band_h - 6)
         c.setStrokeColorRGB(0, 0, 0)
+
         # retorna y inicial
         return H - band_h - 20
 
@@ -412,7 +423,7 @@ img_url   = resolve_image_target(rec.get("Imagem"))
 
 st.markdown("---")
 st.subheader("📄 Exportar PDF")
-st.caption("Relatório com faixa superior (Header Band), logo, métricas (inclui Satélite), imagem e gráficos atuais.")
+st.caption("Relatório com faixa superior (Header Band), logo, métricas (inclui Satélite), imagem e gráficos atuais. Timestamp em UTC.")
 
 if st.button("Gerar PDF (dados + gráficos)", type="primary", use_container_width=True):
     pdf_bytes = build_report_pdf(
