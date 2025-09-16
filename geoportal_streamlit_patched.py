@@ -408,7 +408,7 @@ def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
 taxa      = getv("Taxa Metano")
 inc       = getv("Incerteza")
 vento     = getv("Velocidade do Vento")
-satellite = getv("Satellite")  # <- NOVO
+satellite = satellite = getv("Satelite", "Satélite", "Satellite", "Sat")
 img_url   = resolve_image_target(rec.get("Imagem"))
 
 st.markdown("---")
