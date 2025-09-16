@@ -395,7 +395,7 @@ def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
     # Rodapé
     c.setFont("Helvetica", 8)
     c.setFillColorRGB(0.45, 0.45, 0.45)
-    c.drawRightString(W - margin, margin/2, "© Geoportal — Relatório gerado automaticamente")
+    c.drawRightString(W - margin, margin/2, "© DAPATLAS Geoportal — Relatório gerado automaticamente")
     c.setFillColorRGB(0, 0, 0)
 
     c.showPage()
