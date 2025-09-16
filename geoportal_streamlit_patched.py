@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 
 # ===================== CONFIGURE AQUI =====================
 DEFAULT_BASE_URL = "https://raw.githubusercontent.com/dapsat100-star/geoportal/main"
-LOGO_REL_PATH    = "images/logomavipe.jpeg"   # <- ajuste se necessário
+LOGO_REL_PATH    = "images/logomavipe.jpeg"   # ajuste se necessário
 # =========================================================
 
 # Mapa (opcional)
@@ -81,21 +81,16 @@ def extract_dates_from_first_row(df: pd.DataFrame) -> Tuple[List[str], Dict[str,
             for dayfirst in (True, False):
                 try:
                     dt = pd.to_datetime(v, dayfirst=dayfirst, errors="raise")
-                    label = dt.strftime("%Y-%m-%d")
-                    ts = pd.to_datetime(label)
-                    break
+                    label = dt.strftime("%Y-%m-%d"); ts = pd.to_datetime(label); break
                 except Exception:
                     pass
         if not label:
             try:
                 dt = pd.to_datetime(str(c), dayfirst=True, errors="raise")
-                label = dt.strftime("%Y-%m")
-                ts = pd.to_datetime(label + "-01", errors="coerce")
+                label = dt.strftime("%Y-%m"); ts = pd.to_datetime(label + "-01", errors="coerce")
             except Exception:
-                label = str(c)
-                ts = pd.NaT
-        labels[c] = label
-        stamps.append(ts)
+                label = str(c); ts = pd.NaT
+        labels[c] = label; stamps.append(ts)
     return date_cols, labels, stamps
 
 def build_record_for_month(df: pd.DataFrame, date_col: str) -> Dict[str, Optional[str]]:
@@ -110,15 +105,11 @@ def build_record_for_month(df: pd.DataFrame, date_col: str) -> Dict[str, Optiona
     return rec
 
 def resolve_image_target(path_str: str) -> Optional[str]:
-    if path_str is None or (isinstance(path_str, float) and pd.isna(path_str)):
-        return None
+    if path_str is None or (isinstance(path_str, float) and pd.isna(path_str)): return None
     s = str(path_str).strip()
-    if not s:
-        return None
-    s = s.replace("\\","/")
-    s = s[2:] if s.startswith("./") else s
-    if s.lower().startswith(("http://","https://")):
-        return s
+    if not s: return None
+    s = s.replace("\\","/"); s = s[2:] if s.startswith("./") else s
+    if s.lower().startswith(("http://","https://")): return s
     return f"{DEFAULT_BASE_URL.rstrip('/')}/{s.lstrip('/')}"
 
 def extract_series(dfi: pd.DataFrame, date_cols_sorted, dates_ts_sorted, row_name="Taxa Metano"):
@@ -128,21 +119,17 @@ def extract_series(dfi: pd.DataFrame, date_cols_sorted, dates_ts_sorted, row_nam
     if key is not None:
         for i, col in enumerate(date_cols_sorted):
             val = dfi.loc[key, col] if col in dfi.columns else None
-            try:
-                num = float(pd.to_numeric(val))
-            except Exception:
-                num = None
+            try: num = float(pd.to_numeric(val))
+            except Exception: num = None
             ts = dates_ts_sorted[i]
             if pd.notna(num) and pd.notna(ts):
                 rows.append({"date": ts, "value": float(num)})
     s = pd.DataFrame(rows)
-    if not s.empty:
-        s = s.sort_values("date").reset_index(drop=True)
+    if not s.empty: s = s.sort_values("date").reset_index(drop=True)
     return s
 
 def resample_and_smooth(s: pd.DataFrame, freq_code: str, agg: str, smooth: str, window: int):
-    if s.empty:
-        return s
+    if s.empty: return s
     s2 = s.set_index("date").asfreq("D")
     agg_fn = {"média":"mean","mediana":"median","máx":"max","mín":"min"}[agg]
     out = getattr(s2.resample(freq_code), agg_fn)().dropna().reset_index()
@@ -198,15 +185,31 @@ with right:
     st.subheader("Detalhes do Registro")
     dfi = df_site.copy()
     if dfi.columns[0] != "Parametro":
-        dfi.columns = ["Parametro"] + list(dfi.columns[1:])
+        dfi.columns = ["Parametro"] + list(dfi.columns[1:]]
     dfi["Parametro"] = dfi["Parametro"].astype(str).str.strip()
     dfi = dfi.set_index("Parametro", drop=True)
 
-    def getv(name):
-        for cand in (name, name.capitalize(), name.title(), name.replace("ç","c").replace("á","a")):
-            if cand in dfi.index:
-                return dfi.loc[cand, selected_col]
+    # -------- getv robusto (ignora acentos + aceita aliases) --------
+    import unicodedata, re
+    def _norm_txt(s: str) -> str:
+        if s is None: return ""
+        s = unicodedata.normalize("NFKD", str(s))
+        s = "".join(ch for ch in s if not unicodedata.category(ch).startswith("M"))
+        s = re.sub(r"\s+", " ", s).strip().lower()
+        return s
+    _index_norm = {_norm_txt(ix): ix for ix in dfi.index}
+
+    def getv(name: str, *aliases):
+        keys = [_norm_txt(name)] + [_norm_txt(a) for a in aliases]
+        for k in keys:
+            if k in _index_norm:
+                return dfi.loc[_index_norm[k], selected_col]
+        # fallback: início equivalente
+        for nk, orig in _index_norm.items():
+            if any(nk.startswith(k) for k in keys if k):
+                return dfi.loc[orig, selected_col]
         return None
+    # ----------------------------------------------------------------
 
     k1, k2, k3 = st.columns(3)
     k1.metric("Taxa Metano", f"{getv('Taxa Metano')}" if pd.notna(getv('Taxa Metano')) else "—")
@@ -217,8 +220,7 @@ with right:
     st.caption("Tabela completa (parâmetro → valor):")
     table_df = dfi[[selected_col]].copy()
     table_df.columns = ["Valor"]
-    if "Imagem" in table_df.index:
-        table_df = table_df.drop(index="Imagem")
+    if "Imagem" in table_df.index: table_df = table_df.drop(index="Imagem")
     table_df = table_df.applymap(lambda v: "" if (pd.isna(v)) else str(v))
     st.dataframe(table_df, use_container_width=True)
 
@@ -233,22 +235,18 @@ fig_line = None
 if not series.empty:
     fig_line = go.Figure()
     fig_line.add_trace(go.Scatter(x=series["date"], y=series["value"], mode="lines+markers", name="Taxa Metano"))
-
     if show_conf and len(series) >= 3:
-        p10 = series["value"].quantile(0.10)
-        p90 = series["value"].quantile(0.90)
+        p10 = series["value"].quantile(0.10); p90 = series["value"].quantile(0.90)
         fig_line.add_trace(go.Scatter(
             x=pd.concat([series["date"], series["date"][::-1]]),
             y=pd.concat([pd.Series([p90]*len(series)), pd.Series([p10]*len(series))[::-1]]),
             fill='toself', opacity=0.15, line=dict(width=0), name="P10–P90"
         ))
-
     if show_trend and len(series) >= 2:
         x = (series["date"] - series["date"].min()).dt.days.values.astype(float)
         yvals = series["value"].values.astype(float)
         coeffs = np.polyfit(x, yvals, 1); line = np.poly1d(coeffs)
         fig_line.add_trace(go.Scatter(x=series["date"], y=line(x), mode="lines", name="Tendência", line=dict(dash="dash")))
-
     fig_line.update_layout(template="plotly_white", xaxis_title="Data", yaxis_title="Taxa de Metano",
                            margin=dict(l=10, r=10, t=30, b=10), height=380)
     st.plotly_chart(fig_line, use_container_width=True)
@@ -262,16 +260,13 @@ if not series_raw.empty:
     dfm = series_raw.copy()
     dfm["month"] = dfm["date"].dt.to_period("M").dt.to_timestamp()
     order_months = sorted(dfm["month"].unique())
-
     fig_box = go.Figure()
     for m in order_months:
         vals = dfm.loc[dfm["month"] == m, "value"]
         fig_box.add_trace(go.Box(y=vals, name=m.strftime("%Y-%m"), boxmean="sd"))
-
     mean_by_month = dfm.groupby("month")["value"].mean().reindex(order_months)
     fig_box.add_trace(go.Scatter(x=[m.strftime("%Y-%m") for m in order_months],
                                  y=mean_by_month.values, mode="lines+markers", name="Média mensal"))
-
     fig_box.update_layout(template="plotly_white", yaxis_title="Taxa de Metano",
                           margin=dict(l=10, r=10, t=30, b=10), height=420, boxmode="group")
     st.plotly_chart(fig_box, use_container_width=True)
@@ -280,135 +275,93 @@ else:
 
 # ===================== PDF: helpers =====================
 def _image_reader_from_url(url: str):
-    """Abre uma URL e devolve (ImageReader, w, h)."""
     try:
         with urlopen(url, timeout=10) as resp:
-            img = ImageReader(resp)
-            w, h = img.getSize()
-            return img, w, h
+            img = ImageReader(resp); w, h = img.getSize(); return img, w, h
     except Exception:
         return None, 0, 0
 
 def _draw_logo_top_right(c, page_w, page_h, margin, logo_img, lw, lh, max_w=80, max_h=40):
-    """Desenha o logo pequeno no canto superior direito da página atual."""
-    if not logo_img:
-        return
+    if not logo_img: return
     scale = min(max_w / lw, max_h / lh)
-    lw_scaled, lh_scaled = lw * scale, lh * scale
-    x = page_w - margin - lw_scaled
-    y = page_h - margin - lh_scaled
-    c.drawImage(logo_img, x, y, width=lw_scaled, height=lh_scaled, mask='auto')
+    lw_s, lh_s = lw * scale, lh * scale
+    c.drawImage(logo_img, page_w - margin - lw_s, page_h - margin - lh_s,
+                width=lw_s, height=lh_s, mask='auto')
 
 def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2,
                      logo_rel_path: str = LOGO_REL_PATH,
                      satellite: Optional[str] = None) -> bytes:
-    """Monta PDF A4 com logo fixo no topo direito de cada página, dados e gráficos."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
-    W, H = A4
-    margin = 40
-    y = H - margin
+    W, H = A4; margin = 40; y = H - margin
 
-    # Carrega logo uma vez
+    # logo 1x
     logo_url = f"{DEFAULT_BASE_URL.rstrip('/')}/{logo_rel_path.lstrip('/')}"
     logo_img, logo_w, logo_h = _image_reader_from_url(logo_url)
 
-    # ===== Página 1 =====
-    _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h, max_w=80, max_h=40)
+    # página 1
+    _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h)
 
     # Cabeçalho
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(margin, y, "Relatório Geoportal de Metano")
-    y -= 20
-    c.setFont("Helvetica", 10)
-    c.drawString(margin, y, f"Site: {site}  |  Data: {date}")
-    y -= 12
-    c.drawString(margin, y, f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-    y -= 30
+    c.setFont("Helvetica-Bold", 16); c.drawString(margin, y, "Relatório Geoportal de Metano"); y -= 20
+    c.setFont("Helvetica", 10); c.drawString(margin, y, f"Site: {site}  |  Data: {date}"); y -= 12
+    c.drawString(margin, y, f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}"); y -= 30
 
     # Métricas
-    def _s(v):
-        return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(margin, y, "Métricas")
-    y -= 16
+    def _s(v): return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+    c.setFont("Helvetica-Bold", 12); c.drawString(margin, y, "Métricas"); y -= 16
     c.setFont("Helvetica", 11)
-    for line in (
-        f"• Taxa Metano: {_s(taxa)}",
-        f"• Incerteza: {_s(inc)}",
-        f"• Velocidade do Vento: {_s(vento)}",
-        f"• Satélite: {_s(satellite)}"
-    ):
-        c.drawString(margin, y, line)
-        y -= 14
+    for t in (f"• Taxa Metano: {_s(taxa)}",
+              f"• Incerteza: {_s(inc)}",
+              f"• Velocidade do Vento: {_s(vento)}",
+              f"• Satélite: {_s(satellite)}"):
+        c.drawString(margin, y, t); y -= 14
     y -= 12
 
-    # Imagem principal (do Excel), se houver
+    # Imagem do Excel
     if img_url:
         main_img, iw, ih = _image_reader_from_url(img_url)
         if main_img:
             max_w, max_h = W - 2*margin, 200
-            scale = min(max_w/iw, max_h/ih)
-            w, h = iw*scale, ih*scale
-            c.drawImage(main_img, margin, y - h, width=w, height=h, mask='auto')
-            y -= h + 18
+            s = min(max_w/iw, max_h/ih); w, h = iw*s, ih*s
+            if y - h < margin: c.showPage(); y = H - margin; _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h)
+            c.drawImage(main_img, margin, y - h, width=w, height=h, mask='auto'); y -= h + 18
 
-    # Gráfico 1 (linha)
+    # Gráfico 1
     if fig1 is not None:
         try:
             png1 = fig1.to_image(format="png", width=1400, height=800, scale=2, engine="kaleido")
-            img1 = ImageReader(io.BytesIO(png1))
-            iw, ih = img1.getSize()
-            max_w, max_h = W - 2*margin, 260
-            scale = min(max_w/iw, max_h/ih)
-            w, h = iw*scale, ih*scale
-            if y - h < margin:
-                c.showPage(); y = H - margin
-                _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h, max_w=80, max_h=40)
-            c.drawImage(img1, margin, y - h, width=w, height=h, mask='auto')
-            y -= h + 18
+            img1 = ImageReader(io.BytesIO(png1)); iw, ih = img1.getSize()
+            s = min((W - 2*margin)/iw, 260/ih); w, h = iw*s, ih*s
+            if y - h < margin: c.showPage(); y = H - margin; _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h)
+            c.drawImage(img1, margin, y - h, width=w, height=h, mask='auto'); y -= h + 18
         except Exception as e:
-            c.setFont("Helvetica", 9)
-            c.drawString(margin, y, f"[Falha ao exportar gráfico 1: {e}]")
-            y -= 14
+            c.setFont("Helvetica", 9); c.drawString(margin, y, f"[Falha gráfico 1: {e}]"); y -= 14
 
-    # Gráfico 2 (boxplots)
+    # Gráfico 2
     if fig2 is not None:
         try:
             png2 = fig2.to_image(format="png", width=1400, height=900, scale=2, engine="kaleido")
-            img2 = ImageReader(io.BytesIO(png2))
-            iw2, ih2 = img2.getSize()
-            max_w, max_h = W - 2*margin, 260
-            scale2 = min(max_w/iw2, max_h/ih2)
-            w2, h2 = iw2*scale2, ih2*scale2
-
-            if y - h2 < margin:
-                c.showPage(); y = H - margin
-                _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h, max_w=80, max_h=40)
-
-            c.drawImage(img2, margin, y - h2, width=w2, height=h2, mask='auto')
-            y -= h2 + 12
+            img2 = ImageReader(io.BytesIO(png2)); iw2, ih2 = img2.getSize()
+            s2 = min((W - 2*margin)/iw2, 260/ih2); w2, h2 = iw2*s2, ih2*s2
+            if y - h2 < margin: c.showPage(); y = H - margin; _draw_logo_top_right(c, W, H, margin, logo_img, logo_w, logo_h)
+            c.drawImage(img2, margin, y - h2, width=w2, height=h2, mask='auto'); y -= h2 + 12
         except Exception as e:
-            c.setFont("Helvetica", 9)
-            c.drawString(margin, y, f"[Falha ao exportar gráfico 2: {e}]")
-            y -= 14
+            c.setFont("Helvetica", 9); c.drawString(margin, y, f"[Falha gráfico 2: {e}]"); y -= 14
 
     # Rodapé
-    c.setFont("Helvetica", 8)
-    c.setFillColorRGB(0.45, 0.45, 0.45)
+    c.setFont("Helvetica", 8); c.setFillColorRGB(0.45, 0.45, 0.45)
     c.drawRightString(W - margin, margin/2, "© Geoportal — Relatório gerado automaticamente")
-    c.setFillColorRGB(0, 0, 0)
+    c.setFillColorRGB(0,0,0)
 
-    c.showPage()
-    c.save()
-    buf.seek(0)
+    c.showPage(); c.save(); buf.seek(0)
     return buf.getvalue()
 
 # ===================== Exportar PDF (UI) =====================
 taxa      = getv("Taxa Metano")
 inc       = getv("Incerteza")
 vento     = getv("Velocidade do Vento")
-satellite = satellite = getv("Satelite", "Satélite", "Satellite", "Sat")
+satellite = getv("Satelite", "Satélite", "Satellite", "Sat")  # aliases
 img_url   = resolve_image_target(rec.get("Imagem"))
 
 st.markdown("---")
@@ -417,16 +370,9 @@ st.caption("Gera um PDF com logo, cabeçalho, métricas (inclui Satélite), imag
 
 if st.button("Gerar PDF (dados + gráficos)", type="primary", use_container_width=True):
     pdf_bytes = build_report_pdf(
-        site=site,
-        date=selected_label,
-        taxa=taxa,
-        inc=inc,
-        vento=vento,
-        img_url=img_url,
-        fig1=fig_line,
-        fig2=fig_box,
-        logo_rel_path=LOGO_REL_PATH,
-        satellite=satellite,             # <- NOVO
+        site=site, date=selected_label, taxa=taxa, inc=inc, vento=vento,
+        img_url=img_url, fig1=fig_line, fig2=fig_box,
+        logo_rel_path=LOGO_REL_PATH, satellite=satellite
     )
     st.download_button(
         label="⬇️ Baixar PDF",
