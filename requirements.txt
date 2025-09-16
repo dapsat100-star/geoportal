@@ -8,4 +8,5 @@ streamlit-folium
 plotly
 kaleido
 reportlab
+streamlit-js-eval
 
