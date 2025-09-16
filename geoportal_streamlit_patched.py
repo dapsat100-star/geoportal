@@ -272,157 +272,98 @@ else:
 import streamlit.components.v1 as components
 
 ##########################################################################################################################
-# ======= PDF ROBUSTO (client-side com Plotly.toImage + jsPDF) =======
-import streamlit as st
-from streamlit_js_eval import streamlit_js_eval
+# ========== GERAR RELATÓRIO EM PDF (server-side, sem print screen) ==========
+import io
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
+from datetime import datetime
 
-# Exponha valores que quer no cabeçalho do PDF (aproveita suas métricas)
-def _safe(v):
-    return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+def export_plotly_png(fig, w=1200, h=700):
+    if fig is None: 
+        return None
+    return fig.to_image(format="png", width=w, height=h, engine="kaleido")
 
-m_taxa   = _safe(getv('Taxa Metano'))
-m_inc    = _safe(getv('Incerteza'))
-m_vento  = _safe(getv('Velocidade do Vento'))
+def build_report_pdf(site, date, taxa, inc, vento, img_url, fig1, fig2):
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    W, H = A4
+    margin = 40
+    y = H - margin
 
-# Elementos invisíveis só para o JS ler
-st.markdown(
-    f"""
-    <div id="pdf_site" style="display:none">{site}</div>
-    <div id="pdf_data" style="display:none">{selected_label}</div>
-    <div id="pdf_taxa" style="display:none">{m_taxa}</div>
-    <div id="pdf_inc" style="display:none">{m_inc}</div>
-    <div id="pdf_vento" style="display:none">{m_vento}</div>
-    """,
-    unsafe_allow_html=True
-)
+    # Cabeçalho
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(margin, y, "Relatório Geoportal de Metano")
+    y -= 20
+    c.setFont("Helvetica", 10)
+    c.drawString(margin, y, f"Site: {site} | Data: {date}")
+    y -= 12
+    c.drawString(margin, y, f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    y -= 30
 
-st.markdown("### 📄 Exportar")
-st.caption("Gera um PDF com título, métricas e os gráficos (sem Kaleido).")
-if st.button("📄 Gerar PDF (robusto)", type="primary", use_container_width=True):
-    streamlit_js_eval(js_expressions=r"""
-(async () => {
-  // Carrega jsPDF se necessário
-  if (!window.jspdf) {
-    await new Promise((res,rej)=>{
-      const s=document.createElement('script');
-      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-      s.onload=res; s.onerror=rej; document.head.appendChild(s);
-    });
-  }
-  // Garante Plotly global (normalmente já existe no Streamlit)
-  if (!window.Plotly) {
-    await new Promise((res,rej)=>{
-      const s=document.createElement('script');
-      s.src='https://cdn.plot.ly/plotly-2.29.1.min.js';
-      s.onload=res; s.onerror=rej; document.head.appendChild(s);
-    });
-  }
-  const { jsPDF } = window.jspdf;
+    # Métricas
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(margin, y, "Métricas")
+    y -= 16
+    c.setFont("Helvetica", 11)
+    c.drawString(margin, y, f"• Taxa Metano: {taxa}")
+    y -= 14
+    c.drawString(margin, y, f"• Incerteza: {inc}")
+    y -= 14
+    c.drawString(margin, y, f"• Vento: {vento}")
+    y -= 30
 
-  // Lê os dados para o cabeçalho
-  const txt = (id)=> (document.getElementById(id)?.textContent || "—");
-  const site  = txt('pdf_site');
-  const data  = txt('pdf_data');
-  const taxa  = txt('pdf_taxa');
-  const inc   = txt('pdf_inc');
-  const vento = txt('pdf_vento');
+    # Imagem principal (se houver)
+    if img_url:
+        try:
+            import requests
+            r = requests.get(img_url, stream=True)
+            if r.status_code == 200:
+                img = ImageReader(r.raw)
+                iw, ih = img.getSize()
+                max_w, max_h = W - 2*margin, 200
+                scale = min(max_w/iw, max_h/ih)
+                w, h = iw*scale, ih*scale
+                c.drawImage(img, margin, y-h, w, h)
+                y -= h + 20
+        except Exception as e:
+            c.setFont("Helvetica", 9)
+            c.drawString(margin, y, f"[Erro ao carregar imagem: {e}]")
+            y -= 20
 
-  // Encontra os gráficos Plotly da página (primeiros dois)
-  const plots = Array.from(document.querySelectorAll('.js-plotly-plot')).slice(0, 2);
-  // Exporta cada um para PNG (alta resolução)
-  const images = [];
-  for (const el of plots) {
-    try {
-      const url = await window.Plotly.toImage(el, {format:'png', width:1400, height:800, scale:2});
-      images.push(url);
-    } catch(e) {
-      console.error('Falha ao exportar gráfico:', e);
-    }
-  }
+    # Gráfico 1
+    if fig1:
+        img1 = ImageReader(io.BytesIO(export_plotly_png(fig1)))
+        iw, ih = img1.getSize()
+        scale = min((W-2*margin)/iw, 250/ih)
+        w, h = iw*scale, ih*scale
+        c.drawImage(img1, margin, y-h, w, h)
+        y -= h + 20
 
-  // Monta PDF A4
-  const pdf = new jsPDF('p','pt','a4'); // 595x842 pt
-  const pageW = pdf.internal.pageSize.getWidth();
-  const pageH = pdf.internal.pageSize.getHeight();
-  const margin = 36;
-  let y = margin;
+    # Gráfico 2 (se couber, senão quebra página)
+    if fig2:
+        img2 = ImageReader(io.BytesIO(export_plotly_png(fig2)))
+        iw, ih = img2.getSize()
+        scale = min((W-2*margin)/iw, 250/ih)
+        w, h = iw*scale, ih*scale
+        if y - h < margin:
+            c.showPage(); y = H - margin
+        c.drawImage(img2, margin, y-h, w, h)
+        y -= h + 20
 
-  // Cabeçalho
-  pdf.setFont('helvetica','bold'); pdf.setFontSize(16);
-  pdf.text('Geoportal de Metano — Relatório', margin, y); y += 18;
-  pdf.setFont('helvetica','normal'); pdf.setFontSize(10);
-  pdf.setTextColor(120);
-  pdf.text(`Site: ${site}   |   Data: ${data}`, margin, y); y += 16;
-  pdf.setTextColor(0);
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    return buf.getvalue()
 
-  // Métricas
-  pdf.setFont('helvetica','bold'); pdf.setFontSize(12);
-  pdf.text('Métricas', margin, y); y += 16;
-  pdf.setFont('helvetica','normal'); pdf.setFontSize(11);
-  const linhas = [
-    `• Taxa Metano: ${taxa}`,
-    `• Incerteza: ${inc}`,
-    `• Velocidade do Vento: ${vento}`
-  ];
-  for (const ln of linhas) { pdf.text(ln, margin, y); y += 14; }
-  y += 6;
+# === Botão para gerar ===
+taxa = getv("Taxa Metano")
+inc  = getv("Incerteza")
+vento = getv("Velocidade do Vento")
+img_url = resolve_image_target(rec.get("Imagem"))
 
-  // Insere imagens dos gráficos
-  for (let i=0; i<images.length; i++) {
-    const img = images[i];
-    // carrega imagem para medir
-    const im = new Image(); im.src = img;
-    await new Promise((r, rr)=>{
-      im.onload = r; im.onerror = rr;
-    });
-    const iw = im.naturalWidth, ih = im.naturalHeight;
-    const maxW = pageW - 2*margin;
-    const maxH = pageH - 2*margin - y;
-    let w = maxW, h = ih * (w/iw);
-    if (h > maxH) { h = maxH; w = iw * (h/ih); }
-
-    // quebra de página se não couber
-    if (y + h > pageH - margin) { pdf.addPage(); y = margin; }
-
-    pdf.addImage(img, 'PNG', (pageW - w)/2, y, w, h, undefined, 'FAST');
-    y += h + 12;
-
-    if (i === 0 && images.length > 1) {
-      pdf.setFont('helvetica','bold'); pdf.setFontSize(11);
-      if (y + 18 > pageH - margin) { pdf.addPage(); y = margin; }
-      pdf.text('Boxplots por mês + média mensal', margin, y);
-      y += 14;
-    }
-  }
-
-  // Rodapé
-  pdf.setFont('helvetica','normal'); pdf.setFontSize(8); pdf.setTextColor(120);
-  pdf.text('© Geoportal — Relatório gerado no navegador (Plotly.toImage + jsPDF)', pageW - margin, pageH - 10, {align:'right'});
-
-  // Download
-  const blob = pdf.output('blob');
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `relatorio_geoportal_${site}_${data}.pdf`.replace(/\s+/g,'_');
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
-  return "ok";
-})()
-""", key="make_pdf_plotly_toimage")
-# ======= FIM PDF ROBUSTO =======
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+if st.button("📄 Gerar Relatório PDF (dados + gráficos)", use_container_width=True):
+    pdf_bytes = build_report_pdf(site, selected_label, taxa, inc, vento, img_url, fig_line, fig_box)
+    st.download_button("⬇️ Baixar PDF", data=pdf_bytes,
+                       file_name=f"relatorio_{site}_{selected_label}.pdf".replace(" ", "_"),
+                       mime="application/pdf", use_container_width=True)
