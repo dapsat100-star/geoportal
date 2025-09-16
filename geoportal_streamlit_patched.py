@@ -269,3 +269,147 @@ if not series_raw.empty:
     st.plotly_chart(fig_box, use_container_width=True)
 else:
     st.info("Sem dados suficientes para boxplots mensais.")
+# ===================== RELATÓRIO EXECUTIVO EM PDF (SERVER-SIDE) =====================
+import io
+from datetime import datetime
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
+from reportlab.lib import colors
+
+def _export_plotly_image(fig, width_px=1400, height_px=800, scale=2) -> bytes:
+    """Exporta figura Plotly para PNG usando kaleido."""
+    if fig is None:
+        return b""
+    try:
+        return fig.to_image(format="png", width=width_px, height=height_px, scale=scale, engine="kaleido")
+    except Exception as e:
+        st.error(f"Falha ao exportar gráfico com kaleido: {e}")
+        return b""
+
+def _build_pdf(site: str, selected_label: str, metrics: Dict[str, str],
+               img_line_png: bytes, img_box_png: bytes) -> bytes:
+    """Monta o PDF A4 com título, métricas e gráficos."""
+    buf = io.BytesIO()
+    PAGE_W, PAGE_H = A4  # pts
+    margin = 36  # 0.5 inch
+    title_y = PAGE_H - margin - 10
+
+    c = canvas.Canvas(buf, pagesize=A4)
+    c.setTitle("Geoportal - Relatório Executivo")
+
+    # Cabeçalho
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(margin, title_y, "Geoportal de Metano — Relatório Executivo")
+    c.setFont("Helvetica", 10)
+    c.setFillColor(colors.gray)
+    c.drawString(margin, title_y - 16, f"Site: {site}  |  Data selecionada: {selected_label}  |  Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    c.setFillColor(colors.black)
+
+    # Métricas-chaves
+    y = title_y - 40
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(margin, y, "Métricas")
+    c.setFont("Helvetica", 11)
+    y -= 16
+    for k, v in metrics.items():
+        c.drawString(margin, y, f"• {k}: {v if (v is not None and v != '—') else '—'}")
+        y -= 14
+
+    # Espaço antes do gráfico 1
+    y -= 8
+    # Inserir gráfico de linha (se existir)
+    if img_line_png:
+        # largura útil e escala proporcional
+        max_w = PAGE_W - 2*margin
+        img = ImageReader(io.BytesIO(img_line_png))
+        iw, ih = img.getSize()
+        scale = min(max_w / iw, (y - 100) / ih) if ih > 0 else 1.0
+        w = iw * scale
+        h = ih * scale
+        c.drawImage(img, margin, y - h, width=w, height=h, preserveAspectRatio=True, mask='auto')
+        y = y - h - 18
+
+    # Título do segundo gráfico
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(margin, y, "Boxplots por mês + média mensal")
+    y -= 12
+
+    # Inserir gráfico boxplot
+    if img_box_png:
+        max_w = PAGE_W - 2*margin
+        img2 = ImageReader(io.BytesIO(img_box_png))
+        iw2, ih2 = img2.getSize()
+        scale2 = min(max_w / iw2, (y - 60) / ih2) if ih2 > 0 else 1.0
+        w2 = iw2 * scale2
+        h2 = ih2 * scale2
+
+        # quebra de página se faltar espaço
+        if y - h2 < margin:
+            c.showPage()
+            y = PAGE_H - margin
+        c.drawImage(img2, margin, y - h2, width=w2, height=h2, preserveAspectRatio=True, mask='auto')
+        y = y - h2 - 10
+
+    # Rodapé simples
+    if y - 20 < margin:
+        c.showPage()
+        y = PAGE_H - margin
+    c.setFont("Helvetica", 8)
+    c.setFillColor(colors.gray)
+    c.drawRightString(PAGE_W - margin, margin/2,
+                      "© Geoportal — Uso interno | Este relatório é uma síntese visual")
+    c.setFillColor(colors.black)
+
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    return buf.getvalue()
+
+# Prepara métricas do painel direito
+def _safe_get(val):
+    return "—" if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val)
+
+m_taxa = _safe_get(getv('Taxa Metano'))
+m_inc = _safe_get(getv('Incerteza'))
+m_vento = _safe_get(getv('Velocidade do Vento'))
+
+# Garante que tenhamos as figuras (reusa as criadas acima, se existirem)
+# Caso as variáveis fig_line/fig_box não existam (ex.: sem dados), inicializa como None
+try:
+    _fig_line = fig_line
+except NameError:
+    _fig_line = None
+try:
+    _fig_box = fig_box
+except NameError:
+    _fig_box = None
+
+# Botão para gerar e baixar
+st.markdown("---")
+st.subheader("📄 Exportar")
+st.caption("Baixe um PDF executivo com as métricas e os gráficos atuais.")
+if st.button("Gerar PDF (relatório executivo)", type="primary", use_container_width=True):
+    # Exporta imagens dos gráficos (se houver)
+    png_line = _export_plotly_image(_fig_line, width_px=1400, height_px=800, scale=2) if _fig_line else b""
+    png_box  = _export_plotly_image(_fig_box,  width_px=1400, height_px=900, scale=2) if _fig_box  else b""
+
+    pdf_bytes = _build_pdf(
+        site=site,
+        selected_label=selected_label,
+        metrics={
+            "Taxa Metano": m_taxa,
+            "Incerteza": m_inc,
+            "Velocidade do Vento": m_vento
+        },
+        img_line_png=png_line,
+        img_box_png=png_box
+    )
+    st.download_button(
+        label="⬇️ Baixar PDF",
+        data=pdf_bytes,
+        file_name=f"relatorio_geoportal_{site}_{selected_label}.pdf".replace(" ", "_"),
+        mime="application/pdf",
+        use_container_width=True
+    )
+# ================== FIM RELATÓRIO EXECUTIVO EM PDF (SERVER-SIDE) ==================
